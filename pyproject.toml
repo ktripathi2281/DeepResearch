@@ -15,6 +15,7 @@ dependencies = [
   "pydantic-settings>=2.3",
   "sqlalchemy>=2.0",
   "psycopg[binary]>=3.1",
+  "pgvector>=0.3",
 ]
 
 [project.optional-dependencies]

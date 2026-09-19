@@ -1,11 +1,13 @@
-# DeepResearch — Milestone 1: Repository and Local Infrastructure
+# DeepResearch — Milestones 1–2: Foundation + Database Schema
 
-Local-first, evidence-based research assistant. Milestone 1 is the
-development foundation only: Python project, FastAPI skeleton,
-PostgreSQL + pgvector via Docker Compose, health/readiness endpoints,
-env-based config, structured logging, pytest.
+Local-first, evidence-based research assistant. M1 built the development
+foundation (Python project, FastAPI skeleton, PostgreSQL + pgvector via
+Docker Compose, health/readiness, env config, logging, pytest). M2 adds
+the persistence foundation: `documents` + `chunks` tables, pgvector
+`VECTOR(384)` as schema capability (NULL until M4), repository layer.
 
-No RAG, ingestion, retrieval, generation, or frontend yet.
+No ingestion, retrieval, BM25, reranking, generation, agent, eval, or
+frontend yet.
 
 ## Repository layout (root = `C:\Users\tripa\Projects\DeepResearch`)
 
@@ -14,9 +16,9 @@ No RAG, ingestion, retrieval, generation, or frontend yet.
 ├── apps/               # reserved (future web/API wrappers, M19)
 ├── docs/               # PRD, architecture, evaluation, prompts
 ├── evals/              # reserved (datasets/runners, M16+)
-├── infra/              # reserved (deploy extras)
-├── src/deepresearch/   # config.py, logging.py, db.py, main.py
-├── tests/              # test_health.py, test_config.py, test_db.py
+├── infra/              # migrations/001_initial.sql + deploy extras
+├── src/deepresearch/   # config, logging, db (engine+init_db), models, repository, main
+├── tests/              # health/config/db + test_models (sqlite) + test_postgres_schema (PG)
 ├── docker-compose.yml
 ├── Dockerfile
 ├── pyproject.toml
@@ -68,6 +70,26 @@ docker compose down
 Postgres image is `pgvector/pgvector:pg16` so the vector extension is
 available for Milestone 2 without changing images.
 
+## Database schema (M2)
+
+Tables: `documents` (id UUID, title, source, content_hash UNIQUE,
+document_type, metadata JSON, created_at) and `chunks` (id UUID,
+document_id FK CASCADE, text, chunk_index, section/page nullable,
+metadata JSON, embedding VECTOR(384) NULL, embedding_model/version NULL,
+created_at; UNIQUE(document_id, chunk_index)).
+
+`content_hash` is the ingestion idempotency key (M3). `embedding` stays
+NULL until M4 — see `docs/adr/001-postgres-pgvector-schema.md`.
+Migration strategy (`create_all` + versioned SQL, Alembic deferred):
+`docs/adr/002-migration-strategy.md`.
+
+```powershell
+# SQLite-safe default not needed — schema targets Postgres:
+docker compose up -d postgres
+python -c "from deepresearch.config import get_settings; from deepresearch.db import get_engine, init_db; init_db(get_engine(get_settings()))"
+# Canonical DDL for review: infra/migrations/001_initial.sql
+```
+
 ## Tests
 
 ```powershell
@@ -101,6 +123,8 @@ ruff format src tests   # apply fixes
 6. Fixed `PRODUCT_REQUIREMENTS.md` numbering: `7A→8`, `8→9`, `9→10` (content unchanged).
 7. Hardware/models frozen: LOQ 16GB/6GB, `qwen3:4b Q4_K_M`, `bge-small-en-v1.5`, `bge-reranker-base`, optional `gemma3:4b`; no larger models or paid APIs without approval.
 
-## What's next (not in M1)
+## What's next (not in M2)
 
-Milestone 2: DB schema + migrations + pgvector column + repository layer.
+Milestone 3: document ingestion (parsing, normalization, configurable
+token chunking with defaults 800/120, metadata preservation, hashing,
+idempotency) — no embeddings/retrieval yet.
