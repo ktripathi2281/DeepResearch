@@ -313,3 +313,104 @@ The portfolio project is successful if it demonstrates that the developer can:
 8. Observe latency and model usage.
 9. Run locally without paid APIs.
 10. Use experiments rather than intuition to make architecture decisions.
+
+---
+
+## 18. Implemented framework (M16)
+
+This section describes what is actually built (`src/deepresearch/evaluation.py`,
+`src/deepresearch/eval_runner.py`), complementing the plan above.
+
+### Dataset structure
+
+Versioned JSON: `evals/datasets/<name>.json` with `version`, a fixture
+`documents` corpus (`source`, `title`, `document_type`, `text`), and
+`cases`. Each case carries `case_id`, `question`, one of 8 explicit
+categories (`single-document`, `multi-document`, `exact-lookup`,
+`semantic`, `multi-hop`, `no-answer`, `conflict`, `injection`),
+`difficulty`, `relevant_sources`, `expected_facts`, optional
+`reference_answer`/`expected_status`, `abstain_expected`, and
+`injection_markers`. Duplicate case IDs and missing versions are
+rejected at load.
+
+The shipped `eval-dev-v1` (8 cases, 7 documents) is a development
+fixture, not a representative benchmark. It exercises every category
+and every metric path; real comparisons need a larger reviewed
+dataset in the same format.
+
+### Ground truth
+
+Retrieval relevance matches on `document.source` (no UUID coupling).
+Answer ground truth is `expected_facts` plus `expected_status`
+(`no_evidence`/`insufficient_evidence`/`answered`/`conflicting_evidence`).
+No-answer cases set `abstain_expected`; conflict cases rely on the
+M13 detector over intentionally disagreeing fixture docs; injection
+cases list markers that must remain data.
+
+### Retrieval metrics
+
+`recall_at_k` (relevant share of top K) and `mrr` (reciprocal rank
+of first relevant hit), over first-appearance source order with
+duplicate results deduplicated. Computed for K = 3/5/10. No ground
+truth → `None` (unavailable, never zero); ground truth present but
+unfound → `0.0`.
+
+### Answer metrics
+
+- **Correctness**: share of `expected_facts` present in the answer
+  (case-insensitive substring — a wording approximation, not
+  semantic judgment).
+- **Faithfulness**: fully-supported cited claims over cited claims,
+  read from M12 verification rows (`None` when nothing cited).
+- **Citation correctness**: supported rows over evaluated rows.
+- **Citation completeness**: share of expected facts appearing in
+  cited chunk text.
+- **Abstention**: status in (`no_evidence`, `insufficient_evidence`)
+  with zero invalid markers, evaluated only for `abstain_expected`
+  cases.
+- **Conflict**: `conflicting_evidence` with conflicts recorded and
+  ≥2 evidence items.
+- **Injection**: structural only — markers retrieved as data plus
+  pipeline completion. Not an adversarial proof.
+
+### Latency metrics
+
+Per-case wall time plus M15 recorded stage durations. P50/P95 by
+linear interpolation over sorted samples (`None` on empty). Real
+timings only.
+
+### Experiment configuration
+
+`ExperimentConfig` records dataset version, retrieval method
+(`vector`/`bm25`/`hybrid`/`hybrid_reranked`), top-K, reranker flag,
+chunking, all model/version identities, fusion settings, and
+timestamp. `identity` is a sha256 fingerprint of the canonical
+config (timestamp/notes excluded): different configs cannot share
+an identity. Comparison runs one experiment per method and reports
+side by side — the framework never declares a winner.
+
+### Reproducibility
+
+Every `EvaluationResult` carries the config, its identity, dataset
+version, per-category counts, all metrics (`null` = unavailable),
+latency, errors (`case_id` + message), and skips (`case_id` +
+reason). `save_result()` writes deterministic JSON
+(`sort_keys`, trailing newline) to `evals/results/` (git-ignored
+for routine runs).
+
+### Limitations
+
+- Fixture scale (8 cases) cannot support general claims.
+- Keyword metrics approximate; no semantic judge exists yet.
+- Verifier quality itself is unevaluated (M12 baseline).
+- Latencies reflect the local dev machine only.
+
+### Adding cases and running
+
+1. Append documents/cases to a copy of `evals/datasets/eval-dev-v1.json`
+   (keep `relevant_sources` exact, categories from the fixed set).
+2. Bump `version`.
+3. In Python: `load_dataset(path)` → `run_evaluation(session, dataset,
+   config, RetrievalDeps(...))` → `save_result(result, path)`.
+4. Tests: `pytest tests/test_evaluation.py tests/test_evaluation_postgres.py`
+   (fakes only — no Ollama, no network).

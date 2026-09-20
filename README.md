@@ -1,4 +1,4 @@
-# DeepResearch — Milestones 1–15: + Observability & Tracing
+# DeepResearch — Milestones 1–16: + Evaluation Framework
 
 Local-first, evidence-based research assistant. M1 built the development
 foundation (Python project, FastAPI skeleton, PostgreSQL + pgvector via
@@ -29,8 +29,16 @@ cited claim against its cited evidence with the local LLM
 (JSON verdicts: supported/unsupported/insufficient_evidence, plus
 explicit invalid/uncited/unverifiable states) — an LLM-assisted
 baseline that itself needs evaluation, not a correctness proof.
+M13 adds explicit outcomes (`no_evidence` / `insufficient_evidence` /
+`answered` / `conflicting_evidence`). M14 adds a bounded research
+agent (3 read-only tools, hard caps). M15 adds request tracing
+(stages, counters, per-role models). M16 makes it measurable:
+versioned eval datasets, Recall@K/MRR, deterministic
+answer/citation/abstention/conflict metrics, P50/P95 latencies, and
+fingerprinted experiments across vector/BM25/hybrid/reranked
+configs — measurements only, never winners.
 
-No agents, eval framework, or frontend yet.
+No frontend yet.
 
 ## Repository layout (root = `C:\Users\tripa\Projects\DeepResearch`)
 
@@ -40,7 +48,7 @@ No agents, eval framework, or frontend yet.
 ├── docs/               # PRD, architecture, evaluation, prompts
 ├── evals/              # reserved (datasets/runners, M16+)
 ├── infra/              # migrations/001_initial.sql + deploy extras
-├── src/deepresearch/   # config, logging, db, models, repository, parsing/chunking/ingestion/embeddings/retrieval/bm25/hybrid/reranker/llm/generation/citations/verification/answer_status/agent, main
+├── src/deepresearch/   # config, logging, db, models, repository, parsing/chunking/ingestion/embeddings/retrieval/bm25/hybrid/reranker/llm/generation/citations/verification/answer_status/agent/observability/evaluation/eval_runner, main
 ├── tests/              # unit (sqlite) + PG integration + fixtures/
 ├── docker-compose.yml
 ├── Dockerfile
@@ -367,6 +375,28 @@ carry identifiers and counts only — never prompts, documents,
 reasoning, or secrets. No external platform, no dashboard, no
 persistence. Details: `docs/adr/ADR-015-observability.md`.
 
+## Evaluation (M16)
+
+```powershell
+python -c "
+from deepresearch.eval_runner import load_dataset, run_evaluation, save_result
+from deepresearch.evaluation import ExperimentConfig
+dataset = load_dataset('evals/datasets/eval-dev-v1.json')
+print(dataset.version, len(dataset.cases), 'cases')
+"
+```
+
+Versioned datasets (`evals/datasets/`, 8 explicit categories),
+source-level ground truth, Recall@3/5/10 + MRR (`None` means
+unavailable, never zero), deterministic answer/citation metrics
+from verification rows and statuses, abstention/conflict rates,
+P50/P95 from real trace timings, and sha256-fingerprinted
+experiments across vector/BM25/hybrid/reranked configs. Results
+serialize to `evals/results/` (git-ignored). The shipped
+`eval-dev-v1` is a development fixture, not a representative
+benchmark. Details: `docs/EVALUATION.md`,
+`docs/adr/ADR-016-evaluation-framework.md`.
+
 ## Tests
 
 ```powershell
@@ -400,7 +430,8 @@ ruff format src tests   # apply fixes
 6. Fixed `PRODUCT_REQUIREMENTS.md` numbering: `7A→8`, `8→9`, `9→10` (content unchanged).
 7. Hardware/models frozen: LOQ 16GB/6GB, `qwen3:4b Q4_K_M`, `bge-small-en-v1.5`, `bge-reranker-base`, optional `gemma3:4b`; no larger models or paid APIs without approval.
 
-## What's next (not in M15)
+## What's next (not in M16)
 
-Milestone 16: evaluation framework (versioned datasets, retrieval
-metrics, answer-quality measurement) — no production serving yet.
+Milestone 17: evaluation experiments (baselines and comparisons on
+larger reviewed datasets using this framework) — no production
+serving yet.

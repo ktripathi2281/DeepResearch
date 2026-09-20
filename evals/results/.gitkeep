@@ -1,0 +1,2 @@
+Evaluation outputs land here via save_result(). Committed runs are
+snapshots for review; routine local runs stay untracked (see .gitignore).
