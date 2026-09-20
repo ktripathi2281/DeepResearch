@@ -30,6 +30,11 @@ from sqlalchemy.orm import Session
 from deepresearch.bm25 import DEFAULT_B, DEFAULT_K1, BM25Index, retrieve_bm25
 from deepresearch.embeddings import EmbeddingProvider
 from deepresearch.logging import get_logger
+from deepresearch.observability import (
+    COUNTER_RETRIEVAL_HYBRID,
+    count,
+    traced_stage,
+)
 from deepresearch.retrieval import (
     DEFAULT_TOP_K,
     MAX_TOP_K,
@@ -174,7 +179,8 @@ def retrieve_hybrid(
     )
 
     if fusion_method == "rrf":
-        fused = fuse_rrf(vector_results, bm25_results, rrf_k=rrf_k)
+        with traced_stage("hybrid_fusion"):
+            fused = fuse_rrf(vector_results, bm25_results, rrf_k=rrf_k)
     else:  # validated above; guard against future bypass
         raise RetrievalError(f"unsupported fusion_method: {fusion_method!r}")
 
@@ -196,6 +202,7 @@ def retrieve_hybrid(
         )
         for rank, candidate in enumerate(fused[:limit], start=1)
     ]
+    count(COUNTER_RETRIEVAL_HYBRID, len(fused))
     elapsed_ms = int((time.perf_counter() - started) * 1000)
     logger.info(
         "hybrid retrieval finished",

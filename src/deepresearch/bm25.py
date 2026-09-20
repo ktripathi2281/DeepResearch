@@ -23,6 +23,11 @@ from sqlalchemy.orm import Session
 from deepresearch import repository
 from deepresearch.chunking import tokenize
 from deepresearch.logging import get_logger
+from deepresearch.observability import (
+    COUNTER_RETRIEVAL_BM25,
+    count,
+    traced_stage,
+)
 from deepresearch.retrieval import (
     MAX_TOP_K,
     RetrievalError,
@@ -189,21 +194,22 @@ def retrieve_bm25(
         return []  # punctuation-only query: content but no indexable terms
 
     started = time.perf_counter()
-    if index is None:
-        index, row_map = build_index_from_session(
-            session, k1=k1, b=b, document_id=document_id, document_type=document_type
-        )
-    else:
-        if not index.is_fresh(session, document_id=document_id, document_type=document_type):
-            raise StaleIndexError(
-                "provided BM25 index is stale for this corpus/scope; "
-                "call refresh() or omit index to rebuild"
+    with traced_stage("bm25_retrieval"):
+        if index is None:
+            index, row_map = build_index_from_session(
+                session, k1=k1, b=b, document_id=document_id, document_type=document_type
             )
-        row_map = repository.get_chunks_with_documents_by_ids(
-            session, [index.chunk_ids[pos] for pos, _ in index.score(query_tokens)[:limit]]
-        )
-        # Re-derive rows for winners only; metadata stays fresh from the DB.
-    scored = index.score(query_tokens)[:limit]
+        else:
+            if not index.is_fresh(session, document_id=document_id, document_type=document_type):
+                raise StaleIndexError(
+                    "provided BM25 index is stale for this corpus/scope; "
+                    "call refresh() or omit index to rebuild"
+                )
+            row_map = repository.get_chunks_with_documents_by_ids(
+                session, [index.chunk_ids[pos] for pos, _ in index.score(query_tokens)[:limit]]
+            )
+            # Re-derive rows for winners only; metadata stays fresh from the DB.
+        scored = index.score(query_tokens)[:limit]
     results = [
         RetrievalResult(
             chunk_id=row_map[index.chunk_ids[pos]][0].id,
@@ -222,6 +228,7 @@ def retrieve_bm25(
         )
         for rank, (pos, score) in enumerate(scored, start=1)
     ]
+    count(COUNTER_RETRIEVAL_BM25, len(results))
     elapsed_ms = int((time.perf_counter() - started) * 1000)
     logger.info(
         "bm25 retrieval finished",

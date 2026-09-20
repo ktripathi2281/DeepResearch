@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -31,6 +32,17 @@ from deepresearch.citations import (
 )
 from deepresearch.llm import LLMProvider
 from deepresearch.logging import get_logger
+from deepresearch.observability import (
+    COUNTER_VERIFICATION_CALLS,
+    COUNTER_VERIFICATION_CLAIMS,
+    COUNTER_VERIFICATION_INSUFFICIENT,
+    COUNTER_VERIFICATION_SUPPORTED,
+    COUNTER_VERIFICATION_UNSUPPORTED,
+    COUNTER_VERIFICATION_UNVERIFIABLE,
+    count,
+    get_current_trace,
+    traced_stage,
+)
 from deepresearch.retrieval import RetrievalResult
 
 logger = get_logger(__name__)
@@ -205,12 +217,21 @@ def _verify_claim(
                 '"explanation": "<one sentence>"}. Return ONLY that JSON object.\n\n'
                 f"Previous output:\n{previous_output[:500]}"
             )
+        call_started = time.perf_counter()
         previous_output = llm_provider.generate(
             user_prompt,
             system_prompt=system_prompt,
             temperature=temperature,
             max_tokens=max_tokens,
         )
+        current = get_current_trace()
+        if current is not None:
+            current.record_llm_call(
+                model=llm_provider.model_name,
+                provider=type(llm_provider).__name__,
+                duration_ms=int((time.perf_counter() - call_started) * 1000),
+                role="verifier",
+            )
         try:
             decision = parse_decision(previous_output)
         except VerificationError as exc:
@@ -278,41 +299,55 @@ def verify_answer_citations(
     }
     extraction = extract_citations(answer_text or "", evidence)
     claims = extract_claims(answer_text or "")
+    count(COUNTER_VERIFICATION_CLAIMS, len(claims))
     results: list[CitationVerificationResult] = []
-    for claim in claims:
-        valid = [(by_id[number], texts[number]) for number in claim.citation_ids if number in by_id]
-        for number in claim.citation_ids:
-            if number not in by_id:
+    with traced_stage("citation_verification"):
+        for claim in claims:
+            valid = [
+                (by_id[number], texts[number]) for number in claim.citation_ids if number in by_id
+            ]
+            for number in claim.citation_ids:
+                if number not in by_id:
+                    results.append(
+                        CitationVerificationResult(
+                            claim_id=claim.claim_id,
+                            citation_id=number,
+                            claim_text=claim.text,
+                            evidence=None,
+                            status="invalid_citation",
+                            explanation=f"citation [{number}] has no corresponding evidence",
+                        )
+                    )
+            if not claim.citation_ids:
                 results.append(
                     CitationVerificationResult(
                         claim_id=claim.claim_id,
-                        citation_id=number,
+                        citation_id=None,
                         claim_text=claim.text,
                         evidence=None,
-                        status="invalid_citation",
-                        explanation=f"citation [{number}] has no corresponding evidence",
+                        status="uncited",
+                        explanation="claim carries no citation marker",
                     )
                 )
-        if not claim.citation_ids:
-            results.append(
-                CitationVerificationResult(
-                    claim_id=claim.claim_id,
-                    citation_id=None,
-                    claim_text=claim.text,
-                    evidence=None,
-                    status="uncited",
-                    explanation="claim carries no citation marker",
+            elif valid:
+                count(COUNTER_VERIFICATION_CALLS)
+                results.extend(
+                    _verify_claim(
+                        claim,
+                        valid,
+                        llm_provider,
+                        max_repair_attempts=max_repair_attempts,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    )
                 )
-            )
-        elif valid:
-            results.extend(
-                _verify_claim(
-                    claim,
-                    valid,
-                    llm_provider,
-                    max_repair_attempts=max_repair_attempts,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                )
-            )
+    for result in results:
+        if result.status == "supported":
+            count(COUNTER_VERIFICATION_SUPPORTED)
+        elif result.status == "unsupported":
+            count(COUNTER_VERIFICATION_UNSUPPORTED)
+        elif result.status == "insufficient_evidence":
+            count(COUNTER_VERIFICATION_INSUFFICIENT)
+        elif result.status == "unverifiable":
+            count(COUNTER_VERIFICATION_UNVERIFIABLE)
     return CitationVerificationReport(results=results, invalid=list(extraction.invalid))

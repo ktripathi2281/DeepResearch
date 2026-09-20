@@ -19,6 +19,7 @@ from typing import Protocol, runtime_checkable
 from sqlalchemy.orm import Session
 
 from deepresearch.logging import get_logger
+from deepresearch.observability import traced_stage
 
 logger = get_logger(__name__)
 
@@ -245,25 +246,26 @@ def embed_pending_chunks(
     )
 
     embedded = 0
-    for offset in range(0, len(targets), batch_size):
-        batch = targets[offset : offset + batch_size]
-        vectors = provider.embed_texts([c.text for c in batch])
-        if len(vectors) != len(batch):
-            session.rollback()
-            raise EmbeddingError(
-                f"provider returned {len(vectors)} vectors for {len(batch)} chunks"
-            )
-        _validate_batch(vectors, expected=EMBEDDING_DIMENSION)
-        try:
-            for chunk, vector in zip(batch, vectors, strict=True):
-                chunk.embedding = vector
-                chunk.embedding_model = provider.model_name
-                chunk.embedding_version = provider.model_version
-            session.commit()
-        except Exception as exc:
-            session.rollback()
-            raise EmbeddingError(f"failed persisting batch at offset {offset}: {exc}") from exc
-        embedded += len(batch)
+    with traced_stage("embedding"):
+        for offset in range(0, len(targets), batch_size):
+            batch = targets[offset : offset + batch_size]
+            vectors = provider.embed_texts([c.text for c in batch])
+            if len(vectors) != len(batch):
+                session.rollback()
+                raise EmbeddingError(
+                    f"provider returned {len(vectors)} vectors for {len(batch)} chunks"
+                )
+            _validate_batch(vectors, expected=EMBEDDING_DIMENSION)
+            try:
+                for chunk, vector in zip(batch, vectors, strict=True):
+                    chunk.embedding = vector
+                    chunk.embedding_model = provider.model_name
+                    chunk.embedding_version = provider.model_version
+                session.commit()
+            except Exception as exc:
+                session.rollback()
+                raise EmbeddingError(f"failed persisting batch at offset {offset}: {exc}") from exc
+            embedded += len(batch)
 
     elapsed_ms = int((time.perf_counter() - started) * 1000)
     result = EmbeddingResult(

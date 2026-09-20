@@ -17,6 +17,12 @@ from typing import Protocol, runtime_checkable
 
 from deepresearch.embeddings import EmbeddingError, resolve_device
 from deepresearch.logging import get_logger
+from deepresearch.observability import (
+    COUNTER_RERANKER_CANDIDATES,
+    COUNTER_RERANKER_RESULTS,
+    count,
+    traced_stage,
+)
 from deepresearch.retrieval import (
     DEFAULT_TOP_K,
     MAX_TOP_K,
@@ -173,8 +179,10 @@ def rerank_results(
         return []
 
     started = time.perf_counter()
+    count(COUNTER_RERANKER_CANDIDATES, len(candidates))
     try:
-        scores = reranker.rerank(query.strip(), [c.text for c in candidates])
+        with traced_stage("reranking"):
+            scores = reranker.rerank(query.strip(), [c.text for c in candidates])
     except RerankerError:
         raise
     except Exception as exc:
@@ -207,6 +215,7 @@ def rerank_results(
         )
         for rank, (candidate, score) in enumerate(ordered[:limit], start=1)
     ]
+    count(COUNTER_RERANKER_RESULTS, len(final))
     elapsed_ms = int((time.perf_counter() - started) * 1000)
     logger.info(
         "reranking finished",

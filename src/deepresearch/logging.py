@@ -21,8 +21,20 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "message": record.getMessage(),
         }
-        # Attach common structured context if present.
-        for key in ("request_id", "stage", "duration_ms", "path", "method", "status_code"):
+        # Attach common structured context if present. Only these explicit
+        # keys ever reach the log — prompts, documents, secrets, and
+        # headers have no key here by design (see ADR-015).
+        for key in (
+            "request_id",
+            "stage",
+            "duration_ms",
+            "path",
+            "method",
+            "status_code",
+            "event",
+            "status",
+            "error_type",
+        ):
             value = getattr(record, key, None)
             if value is not None:
                 payload[key] = value

@@ -19,6 +19,11 @@ from sqlalchemy.orm import Session
 from deepresearch import repository
 from deepresearch.embeddings import EMBEDDING_DIMENSION, EmbeddingProvider
 from deepresearch.logging import get_logger
+from deepresearch.observability import (
+    COUNTER_RETRIEVAL_VECTOR,
+    count,
+    traced_stage,
+)
 
 logger = get_logger(__name__)
 
@@ -82,7 +87,8 @@ def retrieve(
     limit = validate_top_k(top_k, maximum=max_top_k)
 
     started = time.perf_counter()
-    vectors = provider.embed_texts([query.strip()])
+    with traced_stage("embedding"):
+        vectors = provider.embed_texts([query.strip()])
     if len(vectors) != 1:
         raise RetrievalError(f"provider returned {len(vectors)} vectors for 1 query")
     query_vector = vectors[0]
@@ -93,17 +99,19 @@ def retrieve(
         )
 
     try:
-        rows = repository.search_chunks_by_vector(
-            session,
-            query_vector=query_vector,
-            model_name=provider.model_name,
-            model_version=provider.model_version,
-            limit=limit,
-            document_id=document_id,
-            document_type=document_type,
-        )
+        with traced_stage("vector_retrieval"):
+            rows = repository.search_chunks_by_vector(
+                session,
+                query_vector=query_vector,
+                model_name=provider.model_name,
+                model_version=provider.model_version,
+                limit=limit,
+                document_id=document_id,
+                document_type=document_type,
+            )
     except Exception as exc:
         raise RetrievalError(f"vector search failed: {exc}") from exc
+    count(COUNTER_RETRIEVAL_VECTOR, len(rows))
 
     results = [
         RetrievalResult(

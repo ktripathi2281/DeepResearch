@@ -38,6 +38,14 @@ from deepresearch.embeddings import EmbeddingProvider
 from deepresearch.hybrid import DEFAULT_RRF_K, retrieve_hybrid
 from deepresearch.llm import LLMProvider
 from deepresearch.logging import get_logger
+from deepresearch.observability import (
+    COUNTER_CITATIONS,
+    COUNTER_EVIDENCE,
+    COUNTER_INVALID_CITATIONS,
+    count,
+    get_current_trace,
+    traced_stage,
+)
 from deepresearch.reranker import (
     DEFAULT_CANDIDATE_TOP_K,
     Reranker,
@@ -272,17 +280,36 @@ def answer_question(
             verification_report=CitationVerificationReport(),
         )
 
-    conflicts = detect_conflicts(evidence)  # exceptions propagate: never silent "no conflict"
-    prompt = build_grounded_prompt(
-        request.text, evidence, max_evidence_chars=max_evidence_chars, conflicts=conflicts
-    )
-    answer_text = llm_provider.generate(
-        prompt.user,
-        system_prompt=prompt.system,
-        temperature=temperature,
-        max_tokens=max_tokens,
-    )
+    with traced_stage("conflict_detection"):
+        conflicts = detect_conflicts(evidence)  # exceptions propagate: never silent "no conflict"
+    with traced_stage("citation_extraction"):
+        prompt = build_grounded_prompt(
+            request.text, evidence, max_evidence_chars=max_evidence_chars, conflicts=conflicts
+        )
+    generation_started = time.perf_counter()
+    with traced_stage("generation"):
+        answer_text = llm_provider.generate(
+            prompt.user,
+            system_prompt=prompt.system,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+    generation_ms = int((time.perf_counter() - generation_started) * 1000)
+    trace = get_current_trace()
+    if trace is not None:
+        trace.set_model("embedding", embedding_provider.model_name)
+        trace.set_model("reranker", reranker.model_name)
+        trace.set_model("llm", llm_provider.model_name)
+        trace.set_model("llm_provider", type(llm_provider).__name__)
+        trace.record_llm_call(
+            model=llm_provider.model_name,
+            provider=type(llm_provider).__name__,
+            duration_ms=generation_ms,
+        )
     extraction = extract_citations(answer_text, evidence)
+    count(COUNTER_EVIDENCE, len(evidence))
+    count(COUNTER_CITATIONS, len(extraction.citations))
+    count(COUNTER_INVALID_CITATIONS, len(extraction.invalid))
     verification_report = None
     if verify_citations:
         verification_report = verify_answer_citations(
