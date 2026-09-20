@@ -1,0 +1,3 @@
+DeepResearch ingests plain text documents without any structure metadata.
+The second paragraph carries additional facts for chunking tests.
+Chunk boundaries must remain deterministic across repeated runs.
