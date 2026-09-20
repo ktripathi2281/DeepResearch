@@ -10,3 +10,9 @@ build/
 *.egg-info/
 pgdata/
 evals/results/*.json
+# M18 frontend (Next.js)
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+*.tsbuildinfo
+next-env.d.ts

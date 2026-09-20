@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     api_host: str = Field(default="0.0.0.0")
     api_port: int = Field(default=8000)
 
+    # Milestone 18: browser origins allowed to call the research API.
+    # Comma-separated list; credentials are never enabled, so this is
+    # a simple allowlist for the local Next.js frontend.
+    cors_origins: str = Field(default="http://localhost:3000")
+
     database_url: str = Field(
         default="postgresql+psycopg://deepresearch:deepresearch@localhost:5432/deepresearch"
     )

@@ -1,4 +1,4 @@
-# DeepResearch — Milestones 1–17: + Security & Adversarial Testing
+# DeepResearch — Milestones 1–18: + Frontend & Research Experience
 
 Local-first, evidence-based research assistant. M1 built the development
 foundation (Python project, FastAPI skeleton, PostgreSQL + pgvector via
@@ -40,6 +40,14 @@ configs — measurements only, never winners.
 
 No frontend yet.
 
+M18 adds the first user-facing interface: a Next.js/React/TypeScript
+app in `frontend/` (question input → real progress stages → answer
+with clickable citations → evidence panel → safe research details),
+backed by a minimal new HTTP boundary (`POST /api/research`,
+`GET /api/research/{request_id}`) that exposes only the safe public
+representation of the existing pipeline. Details below in
+"Frontend (M18)".
+
 ## Repository layout (root = `C:\Users\tripa\Projects\DeepResearch`)
 
 ```text
@@ -47,6 +55,7 @@ No frontend yet.
 ├── apps/               # reserved (future web/API wrappers, M19)
 ├── docs/               # PRD, architecture, evaluation, prompts
 ├── evals/              # reserved (datasets/runners, M16+)
+├── frontend/           # M18: Next.js/React/TS UI (app, components, lib, types, tests)
 ├── infra/              # migrations/001_initial.sql + deploy extras
 ├── src/deepresearch/   # config, logging, db, models, repository, parsing/chunking/ingestion/embeddings/retrieval/bm25/hybrid/reranker/llm/generation/citations/verification/answer_status/agent/observability/evaluation/eval_runner, main
 ├── tests/              # unit (sqlite) + PG integration + fixtures/
@@ -417,9 +426,20 @@ see limitations in `docs/SECURITY.md`. Details:
 ```powershell
 pip install -e ".[dev]"
 pytest -v
+# Research API boundary (fakes only + PG integration):
+# pytest tests/test_research_api.py tests/test_research_api_postgres.py -v
 # Live-DB check only (skipped if Postgres is unreachable):
 # $env:TEST_DATABASE_URL="postgresql+psycopg://deepresearch:deepresearch@localhost:5432/deepresearch"
 # pytest -v
+```
+
+Frontend tests (mocked fetch — no Ollama, no Postgres):
+
+```powershell
+cd frontend
+npm install
+npm test        # vitest run
+npm run typecheck
 ```
 
 ## Lint / format (ruff)
@@ -434,6 +454,47 @@ ruff format src tests   # apply fixes
 
 - `GET /health` → `{"status":"ok",...}` (liveness, no DB)
 - `GET /ready` → `200 {"status":"ready"}` or `503 {"status":"not_ready"}` (DB check)
+- `POST /api/research` → `202` job snapshot (`{"question":"..."}`; 422 on empty/>4000 chars)
+- `GET /api/research/{request_id}` → job snapshot (`running`/`completed`/`failed`; 404 unknown)
+
+Example research request (backend on `:8000`, Postgres + models running):
+
+```powershell
+$job = Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/research `
+  -ContentType "application/json" -Body '{"question":"What does hybrid retrieval combine?"}'
+$job.job_status          # running
+Invoke-RestMethod -Uri "http://localhost:8000/api/research/$($job.request_id)"
+```
+
+## Frontend (M18)
+
+```powershell
+# 1. Start the backend (from the repo root; needs Postgres + Ollama for real answers)
+uvicorn deepresearch.main:app --host 0.0.0.0 --port 8000
+
+# 2. Start the frontend (separate shell)
+cd frontend
+npm install
+npm run dev    # http://localhost:3000
+```
+
+Environment variables:
+
+| Variable | Where | Default | Purpose |
+|---|---|---|---|
+| `CORS_ORIGINS` | backend (`.env`) | `http://localhost:3000` | browser origins allowed to call the API |
+| `NEXT_PUBLIC_API_BASE_URL` | frontend | `http://localhost:8000` | backend base URL for submit/poll |
+| `DATABASE_URL` | backend | local Postgres | research pipeline storage |
+
+Architecture at a high level: the browser talks only to the two
+research endpoints above; the backend runs the unchanged M10 pipeline
+(hybrid → rerank → grounded generation → citations → verification) in
+a background thread per request and exposes progress as real
+`RequestTrace` stages. The frontend renders answer + status +
+clickable citations + quoted evidence + research details, and never
+sees prompts, chain-of-thought, secrets, or stack traces. Full
+boundary documentation: `docs/ARCHITECTURE.md` and
+`docs/adr/ADR-018-frontend-research-experience.md`.
 
 ## Decisions locked before Milestone 1
 
@@ -445,8 +506,8 @@ ruff format src tests   # apply fixes
 6. Fixed `PRODUCT_REQUIREMENTS.md` numbering: `7A→8`, `8→9`, `9→10` (content unchanged).
 7. Hardware/models frozen: LOQ 16GB/6GB, `qwen3:4b Q4_K_M`, `bge-small-en-v1.5`, `bge-reranker-base`, optional `gemma3:4b`; no larger models or paid APIs without approval.
 
-## What's next (not in M17)
+## What's next (not in M18)
 
-Milestone 18: security evaluation suite (per-attack pass/fail
-records with mitigations, rerun after fixes) — no production
-serving yet.
+Milestone 19+: authentication, conversation history, document upload
+UI, dashboards, production deployment — all explicitly out of scope
+for M18 (see milestone boundary in the M18 brief).

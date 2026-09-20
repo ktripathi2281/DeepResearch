@@ -1,15 +1,22 @@
-"""FastAPI application — Milestones 1 + 15.
+"""FastAPI application — Milestones 1 + 15 + 18.
 
 Endpoints:
 - GET /health — liveness, no DB dependency.
 - GET /ready  — readiness, checks PostgreSQL connectivity.
+- POST /api/research — start a research job (202 + pollable snapshot).
+- GET /api/research/{request_id} — poll a research job.
 
 M15 request tracing: every request gets an ``X-Request-ID`` (preserved
 when the client supplies a usable one, generated otherwise), an
 isolated observability context, and a completion log entry.
 Health/readiness stay quiet (header only, no access log).
 
-No RAG, ingestion, retrieval, generation, or frontend here.
+M18 CORS: the browser frontend runs on a different origin
+(``CORS_ORIGINS``, default ``http://localhost:3000``); cookies are
+never used, so credentials stay disabled.
+
+No ingestion, retrieval, generation, or frontend logic here — the
+research router in ``research_api`` is the only boundary.
 """
 
 from __future__ import annotations
@@ -17,6 +24,7 @@ from __future__ import annotations
 import time
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from deepresearch.config import get_settings
@@ -28,12 +36,22 @@ from deepresearch.observability import (
     normalize_request_id,
     traced_request,
 )
+from deepresearch.research_api import router as research_router
 
 settings = get_settings()
 configure_logging(settings.log_level)
 logger = get_logger(__name__)
 
 app = FastAPI(title="DeepResearch API", version="0.1.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[origin.strip() for origin in settings.cors_origins.split(",") if origin.strip()],
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
+app.include_router(research_router)
 
 QUIET_PATHS = frozenset({"/health", "/ready"})
 
@@ -66,6 +84,23 @@ async def trace_requests(request: Request, call_next):  # type: ignore[no-untype
             )
     response.headers[REQUEST_ID_HEADER] = request_id
     return response
+
+
+@app.exception_handler(Exception)
+async def safe_unexpected_errors(request: Request, exc: Exception) -> JSONResponse:
+    """User-safe 500: log detail server-side, never leak stack traces."""
+    request_id = normalize_request_id(request.headers.get(REQUEST_ID_HEADER))
+    logger.exception("unhandled error on %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": {
+                "message": "Internal server error.",
+                "type": type(exc).__name__,
+                "request_id": request_id,
+            }
+        },
+    )
 
 
 @app.get("/health")

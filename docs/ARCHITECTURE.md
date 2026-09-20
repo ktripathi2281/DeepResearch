@@ -662,6 +662,76 @@ Each ADR should contain:
 - consequences
 
 
+## 17. Frontend and research API boundary (M18)
+
+The browser is a presentation layer only. It owns no retrieval,
+generation, verification, or agent logic; every research capability
+is the backend pipeline described in §7–§10, exposed through two
+endpoints defined in `src/deepresearch/research_api.py`:
+
+```text
+Next.js (frontend/)
+  │  POST /api/research {"question"} → 202 job snapshot
+  │  GET  /api/research/{request_id} → poll until completed/failed
+  ▼
+FastAPI (research_api router)
+  │  ResearchService: in-memory job store, one background thread
+  │  per request, default researcher = unchanged answer_question
+  │  (hybrid → rerank → grounded generation → citations →
+  │  verification) under traced_request
+  ▼
+Safe public representation only
+```
+
+```text
+Browser                    Backend
+  │                          │
+  │── submit question ──────▶│  202 + server-minted/preserved request ID
+  │◀─ running + stages ─────│  real RequestTrace.stages, no percentages
+  │── poll request ID ──────▶│  completed → ResearchResult
+  │◀─ answer + status ──────│  no_evidence / insufficient_evidence /
+  │   citations + evidence     answered / conflicting_evidence
+  │   conflicts + details     (M13 taxonomy, unchanged)
+```
+
+Rules:
+
+1. **Single source of truth.** `GroundedAnswer` is mapped to
+   `ResearchResult` by `to_research_result()`; the frontend types in
+   `frontend/types/research.ts` mirror that shape and ignore unknown
+   keys. No second status taxonomy, no frontend-side citation
+   invention — the backend citation mapping is authoritative and
+   invalid markers render as plain text.
+2. **Progress is honest.** A running job surfaces `RequestTrace.stages`
+   (the exact `traced_stage` names from §12: `embedding`,
+   `vector_retrieval`, `bm25_retrieval`, `hybrid_fusion`, `reranking`,
+   `conflict_detection`, `citation_extraction`, `generation`,
+   `citation_verification`); the UI maps names to labels and shows
+   durations. Unknown future stages pass through as-is.
+3. **Request IDs are server-owned.** `X-Request-ID` is preserved or
+   minted by the backend (M15); the frontend stores the returned ID
+   for polling/display and never generates its own.
+4. **Validation is server-authoritative.** `ResearchQuestionInput`
+   enforces non-empty and `MAX_QUESTION_CHARS` (4000) → 422; the form
+   mirrors the limit for fast feedback only.
+5. **Errors are user-safe.** Job failure → `job_status: "failed"` with
+   a generic message + request ID; unexpected exceptions → the global
+   500 handler. Detail goes to server logs (`logger.exception`), never
+   to the response. No stack traces, prompts, chain-of-thought,
+   embeddings, or secrets cross the boundary — enforced by explicit
+   Pydantic models plus tests on both sides.
+6. **Evidence is data.** Chunk text crosses as a string value and is
+   rendered as inert quoted text (React escaping; no
+   `dangerouslySetInnerHTML`, no markdown renderer). Instruction-like
+   or `<script>` content stays content.
+7. **No second backend, no duplication.** CORS allowlist
+   (`CORS_ORIGINS`, credentials off) is the only browser-specific
+   backend config. Out of scope: auth, billing, web search,
+   dashboards, streaming, WebSockets.
+
+See `docs/adr/ADR-018-frontend-research-experience.md` for rationale.
+
+
 ## Initial local model configuration
 
 The development machine is a Lenovo LOQ with:

@@ -228,3 +228,13 @@ class OllamaLLMProvider:
             },
         )
         return answer
+
+
+def default_llm_provider(settings: Settings) -> LLMProvider:
+    """Build the default local generation provider from settings (M18 seam).
+
+    Lives here — not in API/boundary code — so the M9 layering rule
+    holds: only ``llm.py`` and ``config.py`` name the concrete local
+    provider. Callers depend on the ``LLMProvider`` protocol.
+    """
+    return OllamaLLMProvider.from_settings(settings)
