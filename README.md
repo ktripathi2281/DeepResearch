@@ -1,4 +1,4 @@
-# DeepResearch — Milestones 1–13: + No-Answer & Conflict Handling
+# DeepResearch — Milestones 1–15: + Observability & Tracing
 
 Local-first, evidence-based research assistant. M1 built the development
 foundation (Python project, FastAPI skeleton, PostgreSQL + pgvector via
@@ -40,7 +40,7 @@ No agents, eval framework, or frontend yet.
 ├── docs/               # PRD, architecture, evaluation, prompts
 ├── evals/              # reserved (datasets/runners, M16+)
 ├── infra/              # migrations/001_initial.sql + deploy extras
-├── src/deepresearch/   # config, logging, db, models, repository, parsing/chunking/ingestion/embeddings/retrieval/bm25/hybrid/reranker/llm/generation/citations/verification/answer_status, main
+├── src/deepresearch/   # config, logging, db, models, repository, parsing/chunking/ingestion/embeddings/retrieval/bm25/hybrid/reranker/llm/generation/citations/verification/answer_status/agent, main
 ├── tests/              # unit (sqlite) + PG integration + fixtures/
 ├── docker-compose.yml
 ├── Dockerfile
@@ -320,6 +320,53 @@ sources preserved, conflict-aware prompting). Details:
 detection is conservative — no perfect-detection claim is made. No
 factual-accuracy or production-readiness claim is made.
 
+## Research agent (M14)
+
+```powershell
+python -c "
+from deepresearch.config import get_settings
+from deepresearch.db import get_engine, get_session_factory
+from deepresearch.agent import run_research_agent
+from deepresearch.embeddings import LocalEmbeddingProvider
+from deepresearch.llm import OllamaLLMProvider
+s = get_settings(); engine = get_engine(s)
+with get_session_factory(engine)() as session:
+    result = run_research_agent(
+        session, LocalEmbeddingProvider(), OllamaLLMProvider.from_settings(s),
+        'What does hybrid retrieval combine?',
+    )
+    print(result.termination_reason, len(result.evidence))
+"
+```
+
+`run_research_agent` loops LLM decisions over exactly three
+read-only tools (`search_documents`, `get_chunk`, `get_document`)
+with hard caps (8 iterations, 12 tool calls, 60 s) and returns
+deduplicated evidence for the existing answer pipeline. Local corpus
+only — no web search, no code execution, no writes. Details:
+`docs/adr/ADR-014-bounded-research-agent.md`. Not a general
+autonomous agent; live reliability is smoke-tested, not asserted.
+
+## Observability (M15)
+
+```powershell
+python -c "
+from deepresearch.observability import traced_request, get_current_trace
+with traced_request() as trace:
+    pass  # run any pipeline call here; stages/counters attach to trace
+print(trace.to_dict())
+"
+```
+
+Every request gets an `X-Request-ID` (preserved or minted) with an
+isolated in-memory `RequestTrace`: monotonic stage timings, candidate
+counts per pipeline stage, model identity per role (`llm`,
+`verifier`, `agent`), token/cost fields that stay `None` unless a
+provider reports them, and explicit termination. Logs and traces
+carry identifiers and counts only — never prompts, documents,
+reasoning, or secrets. No external platform, no dashboard, no
+persistence. Details: `docs/adr/ADR-015-observability.md`.
+
 ## Tests
 
 ```powershell
@@ -353,8 +400,7 @@ ruff format src tests   # apply fixes
 6. Fixed `PRODUCT_REQUIREMENTS.md` numbering: `7A→8`, `8→9`, `9→10` (content unchanged).
 7. Hardware/models frozen: LOQ 16GB/6GB, `qwen3:4b Q4_K_M`, `bge-small-en-v1.5`, `bge-reranker-base`, optional `gemma3:4b`; no larger models or paid APIs without approval.
 
-## What's next (not in M13)
+## What's next (not in M15)
 
-Milestone 14: bounded research agent (search/chunk/document tools,
-iteration and tool-call caps, timeouts, no arbitrary code) — no web
-search yet.
+Milestone 16: evaluation framework (versioned datasets, retrieval
+metrics, answer-quality measurement) — no production serving yet.

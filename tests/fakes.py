@@ -178,3 +178,31 @@ class FakeVerifierLLM(FakeLLMProvider):
         if not self._responses:
             raise LLMError("fake verifier has no scripted response left")
         return self._responses.pop(0)
+
+
+class FakeAgentLLM(FakeLLMProvider):
+    """Scripted agent decisions: pops one canned JSON decision per call."""
+
+    def __init__(self, *, decisions: list[str], model_name: str = "fake-agent") -> None:
+        super().__init__(answer="", model_name=model_name, model_version="fake-av")
+        self._decisions = list(decisions)
+
+    def generate(
+        self,
+        prompt: str,
+        *,
+        system_prompt: str | None = None,
+        temperature: float = 0.0,
+        max_tokens: int | None = None,
+    ) -> str:
+        self.calls.append(
+            {
+                "prompt": prompt,
+                "system_prompt": system_prompt,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+        )
+        if not self._decisions:
+            raise LLMError("fake agent has no scripted decision left")
+        return self._decisions.pop(0)

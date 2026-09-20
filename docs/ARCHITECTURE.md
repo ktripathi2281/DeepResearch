@@ -494,6 +494,35 @@ Store:
 
 Do not store private chain-of-thought.
 
+Implemented in M14 (see `docs/adr/ADR-014-bounded-research-agent.md`):
+
+```text
+Question
+   |
+   v
+Bounded Agent
+   |
++--+--------+-----------+
+|           |           |
+search   get_chunk  get_document
+|           |           |
++-----------+-----------+
+            |
+         Evidence
+            |
+    Existing pipeline
+            |
+      Answer + citations
+            |
+       Verification
+```
+
+`run_research_agent` loops LLM decisions over exactly those three
+read-only tools (8 iterations / 12 tool calls / 60 s caps, one
+bounded decision repair, six explicit terminations) and returns
+deduplicated evidence; the M10 pipeline answers from it. No web
+search in v1.
+
 ## 11. Security boundaries
 
 Treat all document text, web results, and retrieved chunks as untrusted.
@@ -536,6 +565,15 @@ Stages:
 - generation
 - citation_verification
 - response
+
+Implemented in M15 (see `docs/adr/ADR-015-observability.md`):
+in-memory `RequestTrace` (id, status, stage timings, counters,
+models, optional token/cost fields) scoped per request with a
+`ContextVar`; monotonic `traced_stage()` timings that record
+failure and re-raise; passive pipeline counters (no behavior
+change without an active trace); `X-Request-ID` preserved or
+minted by middleware. Logs and traces carry identifiers and
+counts only — never prompts, documents, reasoning, or secrets.
 
 ## 13. Failure handling
 

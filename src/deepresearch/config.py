@@ -74,6 +74,12 @@ class Settings(BaseSettings):
     ollama_temperature: float = Field(default=0.0, ge=0)
     ollama_max_tokens: int | None = Field(default=None, gt=0)
 
+    # Milestone 14: bounded research agent (see ADR-014). Caps guarantee
+    # termination; the agent itself can never raise them.
+    agent_max_iterations: int = Field(default=8, ge=1)
+    agent_max_tool_calls: int = Field(default=12, ge=1)
+    agent_timeout_seconds: float = Field(default=60, gt=0)
+
 
 def get_settings() -> Settings:
     return Settings()
