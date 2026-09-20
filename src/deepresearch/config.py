@@ -1,10 +1,10 @@
 """Application configuration via environment variables.
 
-Milestone 1 only: no RAG/model settings beyond what is needed for
-service startup and DB connectivity. Model names remain configurable
-placeholders for later milestones; hardware constraints (Lenovo LOQ,
-16 GB RAM, 6 GB VRAM, qwen3:4b / bge-small-en-v1.5 / bge-reranker-base)
-are documented in docs/ and must not change without explicit approval.
+Milestones 3–4 add chunking (token-based: target 800, overlap 120) and
+embedding configuration (bge-small-en-v1.5, batch 32, device auto).
+Hardware constraints (Lenovo LOQ, 16 GB RAM, 6 GB VRAM,
+qwen3:4b / bge-small-en-v1.5 / bge-reranker-base) are documented in
+docs/ and must not change without explicit approval.
 """
 
 from pydantic import Field
@@ -24,6 +24,21 @@ class Settings(BaseSettings):
     database_url: str = Field(
         default="postgresql+psycopg://deepresearch:deepresearch@localhost:5432/deepresearch"
     )
+
+    # Milestone 3: token-based chunking (see ADR-003). Overlap must be
+    # smaller than the target; validated in chunking, not here, so that
+    # misconfiguration raises a clear ChunkingError at ingest time.
+    chunk_target_tokens: int = Field(default=800, gt=0)
+    chunk_overlap_tokens: int = Field(default=120, ge=0)
+
+    # Milestone 4: local embeddings (see ADR-004). BAAI/bge-small-en-v1.5
+    # outputs 384 dimensions; batch 32 is conservative for 16 GB RAM /
+    # 6 GB VRAM. Device "auto" uses CUDA when available, else CPU.
+    embedding_model: str = Field(default="BAAI/bge-small-en-v1.5")
+    embedding_model_version: str = Field(default="1")
+    embedding_batch_size: int = Field(default=32, gt=0)
+    embedding_device: str = Field(default="auto")
+    embedding_normalize: bool = Field(default=True)
 
 
 def get_settings() -> Settings:

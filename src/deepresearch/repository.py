@@ -87,3 +87,41 @@ def list_chunks_by_document(session: Session, document_id: uuid.UUID) -> list[Ch
             select(Chunk).where(Chunk.document_id == document_id).order_by(Chunk.chunk_index)
         )
     )
+
+
+def list_chunks_missing_embeddings(session: Session, *, limit: int | None = None) -> list[Chunk]:
+    """Chunks with no vector yet, oldest first (M4 embedding candidates)."""
+    query = select(Chunk).where(Chunk.embedding.is_(None)).order_by(Chunk.created_at)
+    if limit is not None:
+        query = query.limit(limit)
+    return list(session.scalars(query))
+
+
+def list_chunks_with_stale_embeddings(
+    session: Session, *, model_name: str, model_version: str, limit: int | None = None
+) -> list[Chunk]:
+    """Embedded chunks whose model/version differs from the configured provider.
+
+    Returned for reporting and explicit ``force`` re-embedding; never
+    silently mixed with current-model vectors (see ADR-004).
+    """
+    query = (
+        select(Chunk)
+        .where(Chunk.embedding.is_not(None))
+        .where((Chunk.embedding_model != model_name) | (Chunk.embedding_version != model_version))
+        .order_by(Chunk.created_at)
+    )
+    if limit is not None:
+        query = query.limit(limit)
+    return list(session.scalars(query))
+
+
+def count_chunks_with_embeddings(session: Session, *, model_name: str, model_version: str) -> int:
+    """Chunks already embedded with the given model/version (skipped by M4 reruns)."""
+    query = (
+        select(Chunk)
+        .where(Chunk.embedding.is_not(None))
+        .where(Chunk.embedding_model == model_name)
+        .where(Chunk.embedding_version == model_version)
+    )
+    return len(list(session.scalars(query)))

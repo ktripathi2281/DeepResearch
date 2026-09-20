@@ -1,13 +1,16 @@
-# DeepResearch — Milestones 1–2: Foundation + Database Schema
+# DeepResearch — Milestones 1–4: Foundation + Schema + Ingestion + Embeddings
 
 Local-first, evidence-based research assistant. M1 built the development
 foundation (Python project, FastAPI skeleton, PostgreSQL + pgvector via
 Docker Compose, health/readiness, env config, logging, pytest). M2 adds
 the persistence foundation: `documents` + `chunks` tables, pgvector
-`VECTOR(384)` as schema capability (NULL until M4), repository layer.
+`VECTOR(384)`, repository layer. M3 adds deterministic ingestion:
+PDF/Markdown/TXT/HTML parsing, sha256 content hashing, idempotent
+persist, token chunking (800/120 defaults). M4 adds local embeddings:
+`BAAI/bge-small-en-v1.5` (384-d, L2-normalized) via `sentence-transformers`,
+batched `embed_pending_chunks()` with idempotent reruns.
 
-No ingestion, retrieval, BM25, reranking, generation, agent, eval, or
-frontend yet.
+No retrieval, BM25, reranking, generation, agent, eval, or frontend yet.
 
 ## Repository layout (root = `C:\Users\tripa\Projects\DeepResearch`)
 
@@ -17,8 +20,8 @@ frontend yet.
 ├── docs/               # PRD, architecture, evaluation, prompts
 ├── evals/              # reserved (datasets/runners, M16+)
 ├── infra/              # migrations/001_initial.sql + deploy extras
-├── src/deepresearch/   # config, logging, db (engine+init_db), models, repository, main
-├── tests/              # health/config/db + test_models (sqlite) + test_postgres_schema (PG)
+├── src/deepresearch/   # config, logging, db, models, repository, parsing/chunking/ingestion/embeddings, main
+├── tests/              # unit (sqlite) + PG integration + fixtures/
 ├── docker-compose.yml
 ├── Dockerfile
 ├── pyproject.toml
@@ -90,6 +93,48 @@ python -c "from deepresearch.config import get_settings; from deepresearch.db im
 # Canonical DDL for review: infra/migrations/001_initial.sql
 ```
 
+## Ingestion (M3)
+
+```powershell
+docker compose up -d postgres
+python -c "from deepresearch.config import get_settings; from deepresearch.db import get_engine, init_db; init_db(get_engine(get_settings()))"
+python -c "
+from pathlib import Path
+from deepresearch.config import get_settings
+from deepresearch.db import get_engine, get_session_factory, init_db
+from deepresearch.ingestion import ingest_file
+engine = get_engine(get_settings()); init_db(engine)
+with get_session_factory(engine)() as s:
+    r = ingest_file(s, path='tests/fixtures/sample.md')
+    print(r.document.document_type, len(r.chunks), r.duplicate)
+"
+```
+
+Pipeline: bytes → `parsing.parse_bytes` → sha256 hash → hash lookup →
+`chunking.chunk_units` (target/overlap from `Settings`: 800/120) →
+`repository` persist. Re-ingesting identical content returns existing
+rows (`duplicate=True`). Details: `docs/adr/003-ingestion-chunking.md`.
+
+## Embeddings (M4)
+
+```powershell
+docker compose up -d postgres
+python -c "
+from deepresearch.config import get_settings
+from deepresearch.db import get_engine, get_session_factory, init_db
+from deepresearch.embeddings import LocalEmbeddingProvider, embed_pending_chunks
+s = get_settings(); engine = get_engine(s); init_db(engine)
+provider = LocalEmbeddingProvider(model_name=s.embedding_model, device=s.embedding_device)
+with get_session_factory(engine)() as session:
+    print(embed_pending_chunks(session, provider, batch_size=s.embedding_batch_size))
+"
+```
+
+First run downloads `BAAI/bge-small-en-v1.5` (~130 MB) once to the HF
+cache; reruns skip embedded chunks (`embedded=0`). Vectors are
+L2-normalized 384-d; model/version recorded per chunk. Details:
+`docs/adr/004-embeddings.md`.
+
 ## Tests
 
 ```powershell
@@ -123,8 +168,7 @@ ruff format src tests   # apply fixes
 6. Fixed `PRODUCT_REQUIREMENTS.md` numbering: `7A→8`, `8→9`, `9→10` (content unchanged).
 7. Hardware/models frozen: LOQ 16GB/6GB, `qwen3:4b Q4_K_M`, `bge-small-en-v1.5`, `bge-reranker-base`, optional `gemma3:4b`; no larger models or paid APIs without approval.
 
-## What's next (not in M2)
+## What's next (not in M4)
 
-Milestone 3: document ingestion (parsing, normalization, configurable
-token chunking with defaults 800/120, metadata preservation, hashing,
-idempotency) — no embeddings/retrieval yet.
+Milestone 5: semantic retrieval over pgvector (top-K, metadata
+filtering, deterministic tie order) — no BM25/hybrid yet.
