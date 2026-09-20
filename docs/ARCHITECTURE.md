@@ -112,6 +112,26 @@ The response should expose:
 Implement first:
 - OllamaProvider
 
+Implemented in M9 (see `docs/adr/ADR-009-ollama-generation-provider.md`):
+
+```text
+Application
+    |
+LLMProvider
+    |
+OllamaLLMProvider
+    |
+Ollama HTTP API
+    |
+qwen3:4b
+```
+
+Application/domain code depends on the provider abstraction, never
+directly on Ollama. `OllamaLLMProvider` (`qwen3:4b` default,
+configurable base URL/model/timeout/temperature/max tokens) posts to
+`/api/generate` with explicit timeouts and typed errors; no retries,
+no structured output, no chain-of-thought yet.
+
 Later:
 - GeminiProvider
 - OpenAIProvider
@@ -269,6 +289,25 @@ Reciprocal Rank Fusion over the two independent ranked lists
 Later experiments can compare alternatives such as weighted score
 fusion.
 
+Implemented in M8 (see `docs/adr/ADR-008-reranking.md`):
+
+```text
+Vector + BM25
+      |
+     RRF
+      |
+ candidate set
+      |
+Cross Encoder
+ Reranker
+      |
+ final results
+```
+
+Top 20 hybrid candidates are jointly scored with the query by the
+local cross-encoder; the best 5 return as `method="reranked"` with
+raw scores, ties by chunk ID.
+
 ## 8. Generation
 
 The generator receives:
@@ -284,6 +323,35 @@ The system prompt should explicitly define:
 4. State when evidence is insufficient.
 5. Do not invent sources.
 6. Treat conflicting evidence explicitly.
+
+Implemented in M10 (see `docs/adr/ADR-010-grounded-generation.md`;
+citations arrive in M11, so rule 3 is enforced structurally later):
+
+```text
+Question
+   |
+   v
+Hybrid Retrieval
+   |
+   v
+Reranker
+   |
+   v
+Evidence
+   |
+   v
+Grounded Prompt
+   |
+   v
+LLMProvider
+   |
+   v
+Answer
+```
+
+`generation.answer_question` runs hybrid → rerank → delimited
+prompt → provider. Generation is provider-agnostic (any
+`LLMProvider`); empty evidence short-circuits without an LLM call.
 
 ## 9. Citation verification
 

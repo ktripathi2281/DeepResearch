@@ -1,4 +1,4 @@
-# DeepResearch — Milestones 1–7: + Hybrid Retrieval
+# DeepResearch — Milestones 1–10: + Grounded Generation
 
 Local-first, evidence-based research assistant. M1 built the development
 foundation (Python project, FastAPI skeleton, PostgreSQL + pgvector via
@@ -15,9 +15,15 @@ M6 adds in-process Okapi BM25 over `Chunk.text` (`k1=1.5`, `b=0.75`):
 same `RetrievalResult` shape with `method="bm25"`, snapshot index with
 explicit refresh — fully independent from vector retrieval. M7 fuses
 both paths with Reciprocal Rank Fusion (`rrf_k=60`, candidate pools
-`2 × top_k`) into `method="hybrid"` results — no reranking yet.
+`2 × top_k`) into `method="hybrid"` results. M8 reranks those
+candidates with local `BAAI/bge-reranker-base` (raw cross-encoder
+scores, top 20 → top 5, `method="reranked"`). M9 adds the generation
+capability: `LLMProvider` abstraction + `OllamaLLMProvider`
+(`qwen3:4b`, timeouts, typed errors). M10 wires it up: hybrid →
+rerank → delimited grounded prompt → plain-text `GroundedAnswer`
+with evidence and model identity — no citations yet.
 
-No hybrid, reranking, generation, agent, eval, or frontend yet.
+No citations, agent, eval, or frontend yet.
 
 ## Repository layout (root = `C:\Users\tripa\Projects\DeepResearch`)
 
@@ -27,7 +33,7 @@ No hybrid, reranking, generation, agent, eval, or frontend yet.
 ├── docs/               # PRD, architecture, evaluation, prompts
 ├── evals/              # reserved (datasets/runners, M16+)
 ├── infra/              # migrations/001_initial.sql + deploy extras
-├── src/deepresearch/   # config, logging, db, models, repository, parsing/chunking/ingestion/embeddings/retrieval/bm25/hybrid, main
+├── src/deepresearch/   # config, logging, db, models, repository, parsing/chunking/ingestion/embeddings/retrieval/bm25/hybrid/reranker/llm/generation, main
 ├── tests/              # unit (sqlite) + PG integration + fixtures/
 ├── docker-compose.yml
 ├── Dockerfile
@@ -204,6 +210,93 @@ single query embedding, failures propagate. Baseline fusion — M16
 experiments will measure it against each path alone. Details:
 `docs/adr/ADR-007-hybrid-retrieval.md`.
 
+## Reranking (M8)
+
+```powershell
+python -c "
+from deepresearch.config import get_settings
+from deepresearch.db import get_engine, get_session_factory
+from deepresearch.embeddings import LocalEmbeddingProvider
+from deepresearch.hybrid import retrieve_hybrid
+from deepresearch.reranker import LocalCrossEncoderReranker, rerank_results
+s = get_settings(); engine = get_engine(s)
+provider = LocalEmbeddingProvider(model_name=s.embedding_model, device=s.embedding_device)
+reranker = LocalCrossEncoderReranker(model_name=s.reranker_model, device=s.reranker_device)
+with get_session_factory(engine)() as session:
+    hybrid = retrieve_hybrid(session, provider, 'hybrid retrieval', top_k=s.reranker_candidate_top_k)
+    for r in rerank_results('hybrid retrieval', hybrid, reranker, top_k=s.retrieval_top_k):
+        print(round(r.score, 4), r.chunk_index, r.text[:80])
+"
+```
+
+Top 20 hybrid candidates jointly scored with the query by local
+`BAAI/bge-reranker-base` (~278M params, CPU-first; one-time ~1.1 GB
+download to the HF cache). Raw scores, ties by chunk ID, failures
+propagate. Details: `docs/adr/ADR-008-reranking.md`.
+
+## Generation provider (M9)
+
+Ollama must be installed and running; install the model once:
+
+```powershell
+ollama pull qwen3:4b
+ollama list   # verify qwen3:4b is present
+```
+
+Do not pull larger variants (no 14B/30B/32B, no 12B/27B). GPU use
+depends on Ollama and the local environment — it is not guaranteed.
+
+```powershell
+python -c "
+from deepresearch.config import get_settings
+from deepresearch.llm import OllamaLLMProvider
+s = get_settings()
+provider = OllamaLLMProvider.from_settings(s)
+try:
+    print(provider.generate('Reply with exactly: OK'))
+finally:
+    provider.close()
+"
+```
+
+The provider (`qwen3:4b`, 120 s timeout, temperature 0.0) feeds the
+M10 grounded pipeline below. The live smoke test
+(`tests/test_llm_ollama_live.py`) runs against the same daemon and
+skips with setup instructions when Ollama is absent. Details:
+`docs/adr/ADR-009-ollama-generation-provider.md`.
+
+## Grounded answers (M10)
+
+```powershell
+python -c "
+from deepresearch.config import get_settings
+from deepresearch.db import get_engine, get_session_factory
+from deepresearch.embeddings import LocalEmbeddingProvider
+from deepresearch.generation import answer_question
+from deepresearch.llm import OllamaLLMProvider
+from deepresearch.reranker import LocalCrossEncoderReranker
+s = get_settings(); engine = get_engine(s)
+with get_session_factory(engine)() as session:
+    result = answer_question(
+        session,
+        LocalEmbeddingProvider(),
+        LocalCrossEncoderReranker(device='cpu'),
+        OllamaLLMProvider.from_settings(s),
+        'What does hybrid retrieval combine?',
+    )
+    print(result.answer)
+"
+```
+
+`answer_question` runs hybrid → rerank → delimited evidence prompt →
+LLM, returning a `GroundedAnswer` (answer text, evidence,
+model identity). Empty evidence short-circuits to a fixed
+no-evidence message without calling the LLM; retrieved text stays
+untrusted data inside evidence blocks. Requires ingested + embedded
+chunks and a running Ollama. Details:
+`docs/adr/ADR-010-grounded-generation.md`. No citations yet — those
+are M11. No factual-accuracy or production-readiness claim is made.
+
 ## Tests
 
 ```powershell
@@ -237,7 +330,8 @@ ruff format src tests   # apply fixes
 6. Fixed `PRODUCT_REQUIREMENTS.md` numbering: `7A→8`, `8→9`, `9→10` (content unchanged).
 7. Hardware/models frozen: LOQ 16GB/6GB, `qwen3:4b Q4_K_M`, `bge-small-en-v1.5`, `bge-reranker-base`, optional `gemma3:4b`; no larger models or paid APIs without approval.
 
-## What's next (not in M7)
+## What's next (not in M10)
 
-Milestone 8: local reranking (`Reranker` abstraction +
-`bge-reranker-base` over hybrid candidates) — no generation yet.
+Milestone 11: citation system (application-generated citation IDs,
+claim→chunk mapping, invalid-citation rejection, evidence lookup) —
+no citation verification yet.
