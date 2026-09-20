@@ -1,12 +1,15 @@
-"""Shared deterministic test double for M4 (no model, no network, no GPU)."""
+"""Shared deterministic test doubles (no models, no network, no GPU)."""
 
 from __future__ import annotations
 
 import hashlib
 import math
 import random
+from collections.abc import Sequence
 
 from deepresearch.embeddings import EMBEDDING_DIMENSION, EmbeddingError
+from deepresearch.llm import LLMError
+from deepresearch.reranker import RerankerError
 
 
 class FakeEmbeddingProvider:
@@ -56,3 +59,94 @@ class FakeEmbeddingProvider:
         if self._fail_on is not None and any(self._fail_on in t for t in texts):
             raise EmbeddingError("fake provider forced failure")
         return [self._vector(t) for t in texts]
+
+
+class FakeReranker:
+    """Deterministic test double: scores come from a text map (default fallback)."""
+
+    def __init__(
+        self,
+        *,
+        scores: dict[str, float] | None = None,
+        default: float = 0.0,
+        model_name: str = "fake-reranker",
+        device: str = "cpu",
+        batch_size: int = 16,
+        fail: bool = False,
+    ) -> None:
+        self._scores = scores or {}
+        self._default = default
+        self._model_name = model_name
+        self._device = device
+        self._batch_size = batch_size
+        self._fail = fail
+        self.calls: list[int] = []
+
+    @property
+    def model_name(self) -> str:
+        return self._model_name
+
+    @property
+    def model_version(self) -> str:
+        return "fake-v1"
+
+    @property
+    def device(self) -> str:
+        return self._device
+
+    @property
+    def batch_size(self) -> int:
+        return self._batch_size
+
+    def rerank(self, query: str, documents: Sequence[str]) -> list[float]:
+        docs = list(documents)
+        self.calls.append(len(docs))
+        if self._fail:
+            raise RerankerError("fake reranker forced failure")
+        return [self._scores.get(doc, self._default) for doc in docs]
+
+
+class FakeLLMProvider:
+    """Deterministic test double: fixed answer, recorded calls, optional failure."""
+
+    def __init__(
+        self,
+        *,
+        answer: str = "Fake grounded answer.",
+        model_name: str = "fake-llm",
+        model_version: str | None = "fake-v1",
+        fail: bool = False,
+    ) -> None:
+        self._answer = answer
+        self._model_name = model_name
+        self._model_version = model_version
+        self._fail = fail
+        self.calls: list[dict] = []
+
+    @property
+    def model_name(self) -> str:
+        return self._model_name
+
+    @property
+    def model_version(self) -> str | None:
+        return self._model_version
+
+    def generate(
+        self,
+        prompt: str,
+        *,
+        system_prompt: str | None = None,
+        temperature: float = 0.0,
+        max_tokens: int | None = None,
+    ) -> str:
+        self.calls.append(
+            {
+                "prompt": prompt,
+                "system_prompt": system_prompt,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+        )
+        if self._fail:
+            raise LLMError("fake LLM forced failure")
+        return self._answer

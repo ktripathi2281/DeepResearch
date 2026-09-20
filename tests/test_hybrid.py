@@ -239,7 +239,10 @@ def test_empty_branches(monkeypatch) -> None:  # type: ignore[no-untyped-def]
 
 
 def test_metadata_method_and_rank(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    cid_v, cid_b = _ids(2)
+    import uuid as uuid_mod
+
+    # Fixed IDs: both sides tie at 1/61, so the smaller ID must win.
+    cid_v, cid_b = uuid_mod.UUID(int=1), uuid_mod.UUID(int=2)
     results, _ = _run(
         monkeypatch,
         [_result(cid_v, 1, "vector", text="vector text")],

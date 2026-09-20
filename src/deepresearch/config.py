@@ -55,6 +55,25 @@ class Settings(BaseSettings):
     # literature default; candidate pools default to 2 * top_k.
     hybrid_rrf_k: int = Field(default=60, ge=1)
 
+    # Milestone 8: local cross-encoder reranking (see ADR-008).
+    # bge-reranker-base (~278M params) runs on CPU; batch 16 is
+    # conservative for 16 GB RAM / 6 GB VRAM. Candidate pool 20 with
+    # final top-K 5 mirrors the retrieval conventions.
+    reranker_model: str = Field(default="BAAI/bge-reranker-base")
+    reranker_model_version: str = Field(default="1")
+    reranker_device: str = Field(default="auto")
+    reranker_batch_size: int = Field(default=16, gt=0)
+    reranker_candidate_top_k: int = Field(default=20, ge=1)
+
+    # Milestone 9: local Ollama generation (see ADR-009). qwen3:4b is the
+    # constrained baseline (never silently substituted); max_tokens=None
+    # means Ollama's own default (num_predict sent only when set).
+    ollama_base_url: str = Field(default="http://localhost:11434")
+    ollama_model: str = Field(default="qwen3:4b")
+    ollama_timeout_seconds: float = Field(default=120, gt=0)
+    ollama_temperature: float = Field(default=0.0, ge=0)
+    ollama_max_tokens: int | None = Field(default=None, gt=0)
+
 
 def get_settings() -> Settings:
     return Settings()
