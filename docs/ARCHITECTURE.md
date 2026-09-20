@@ -247,11 +247,27 @@ Vector Search     BM25              │
 
 The fusion algorithm must be deterministic and configurable.
 
-Possible first implementation:
-- normalize each score
-- weighted combination
+Implemented in M7 (see `docs/adr/ADR-007-hybrid-retrieval.md`):
 
-Later experiments can compare alternatives such as reciprocal rank fusion.
+```text
+                    query
+                      |
+             +--------+--------+
+             |                 |
+         vector             BM25
+         retrieval          retrieval
+             |                 |
+             +--------+--------+
+                      |
+                     RRF
+                      |
+               hybrid results
+```
+
+Reciprocal Rank Fusion over the two independent ranked lists
+(`1 / (rrf_k + rank)`, `rrf_k=60`); raw scores are never mixed.
+Later experiments can compare alternatives such as weighted score
+fusion.
 
 ## 8. Generation
 

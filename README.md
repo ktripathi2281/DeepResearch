@@ -1,4 +1,4 @@
-# DeepResearch — Milestones 1–6: + BM25 Lexical Retrieval
+# DeepResearch — Milestones 1–7: + Hybrid Retrieval
 
 Local-first, evidence-based research assistant. M1 built the development
 foundation (Python project, FastAPI skeleton, PostgreSQL + pgvector via
@@ -13,7 +13,9 @@ vector retrieval: query → provider → pgvector `<=>` → ranked
 `RetrievalResult`s (score = `1 − distance`, top-K default 5 / max 100).
 M6 adds in-process Okapi BM25 over `Chunk.text` (`k1=1.5`, `b=0.75`):
 same `RetrievalResult` shape with `method="bm25"`, snapshot index with
-explicit refresh — fully independent from vector retrieval.
+explicit refresh — fully independent from vector retrieval. M7 fuses
+both paths with Reciprocal Rank Fusion (`rrf_k=60`, candidate pools
+`2 × top_k`) into `method="hybrid"` results — no reranking yet.
 
 No hybrid, reranking, generation, agent, eval, or frontend yet.
 
@@ -25,7 +27,7 @@ No hybrid, reranking, generation, agent, eval, or frontend yet.
 ├── docs/               # PRD, architecture, evaluation, prompts
 ├── evals/              # reserved (datasets/runners, M16+)
 ├── infra/              # migrations/001_initial.sql + deploy extras
-├── src/deepresearch/   # config, logging, db, models, repository, parsing/chunking/ingestion/embeddings/retrieval/bm25, main
+├── src/deepresearch/   # config, logging, db, models, repository, parsing/chunking/ingestion/embeddings/retrieval/bm25/hybrid, main
 ├── tests/              # unit (sqlite) + PG integration + fixtures/
 ├── docker-compose.yml
 ├── Dockerfile
@@ -178,8 +180,29 @@ with get_session_factory(engine)() as session:
 
 Okapi BM25 (`k1=1.5`, `b=0.75`) over `Chunk.text`, lowercased M3
 tokens, no stemming. Snapshot index with explicit refresh (stale use
-raises); zero-score docs excluded. Independent from vector retrieval —
-no fusion yet. Details: `docs/adr/006-bm25-lexical.md`.
+raises); zero-score docs excluded. Details: `docs/adr/006-bm25-lexical.md`.
+
+## Hybrid retrieval (M7)
+
+```powershell
+python -c "
+from deepresearch.config import get_settings
+from deepresearch.db import get_engine, get_session_factory
+from deepresearch.embeddings import LocalEmbeddingProvider
+from deepresearch.hybrid import retrieve_hybrid
+s = get_settings(); engine = get_engine(s)
+provider = LocalEmbeddingProvider(model_name=s.embedding_model, device=s.embedding_device)
+with get_session_factory(engine)() as session:
+    for r in retrieve_hybrid(session, provider, 'hybrid retrieval', top_k=s.retrieval_top_k):
+        print(round(r.score, 4), r.chunk_index, r.text[:80])
+"
+```
+
+Vector + BM25 candidates fused with RRF (`1 / (rrf_k + rank)`,
+`rrf_k=60`): candidate pools `2 × top_k`, union dedup by chunk ID,
+single query embedding, failures propagate. Baseline fusion — M16
+experiments will measure it against each path alone. Details:
+`docs/adr/ADR-007-hybrid-retrieval.md`.
 
 ## Tests
 
@@ -214,8 +237,7 @@ ruff format src tests   # apply fixes
 6. Fixed `PRODUCT_REQUIREMENTS.md` numbering: `7A→8`, `8→9`, `9→10` (content unchanged).
 7. Hardware/models frozen: LOQ 16GB/6GB, `qwen3:4b Q4_K_M`, `bge-small-en-v1.5`, `bge-reranker-base`, optional `gemma3:4b`; no larger models or paid APIs without approval.
 
-## What's next (not in M6)
+## What's next (not in M7)
 
-Milestone 7: hybrid retrieval (score/rank fusion over the independent
-vector + BM25 paths, deduplication, configurable weights) — no
-reranking yet.
+Milestone 8: local reranking (`Reranker` abstraction +
+`bge-reranker-base` over hybrid candidates) — no generation yet.

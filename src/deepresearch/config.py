@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     bm25_k1: float = Field(default=1.5, gt=0)
     bm25_b: float = Field(default=0.75, ge=0, le=1)
 
+    # Milestone 7: hybrid RRF fusion (see ADR-007). rrf_k=60 is the
+    # literature default; candidate pools default to 2 * top_k.
+    hybrid_rrf_k: int = Field(default=60, ge=1)
+
 
 def get_settings() -> Settings:
     return Settings()
