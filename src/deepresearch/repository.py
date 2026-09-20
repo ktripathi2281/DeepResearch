@@ -1,8 +1,8 @@
-"""Repository / data-access layer — Milestone 2.
+"""Repository / data-access layer — Milestones 2–5.
 
 Thin, explicit helpers over SQLAlchemy sessions. No query builder
 abstraction, no generic base class: each function maps to one
-persistence operation the ingestion pipeline (M3+) will need.
+persistence operation the pipeline needs.
 
 Idempotency contract: ``create_document`` raises
 ``sqlalchemy.exc.IntegrityError`` on a duplicate ``content_hash``;
@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 from deepresearch.models import Chunk, Document
@@ -125,3 +125,40 @@ def count_chunks_with_embeddings(session: Session, *, model_name: str, model_ver
         .where(Chunk.embedding_version == model_version)
     )
     return len(list(session.scalars(query)))
+
+
+def search_chunks_by_vector(
+    session: Session,
+    *,
+    query_vector: list[float],
+    model_name: str,
+    model_version: str,
+    limit: int,
+    document_id: uuid.UUID | None = None,
+    document_type: str | None = None,
+) -> list[tuple[Chunk, Document, float]]:
+    """Cosine-similarity search over embedded chunks (M5, PostgreSQL + pgvector).
+
+    Ranking executes in the database via the native ``<=>`` operator;
+    embeddings are never loaded into Python for scoring. Only chunks
+    embedded with the given model/version are comparable, so the filter
+    is always applied — incompatible vectors are never mixed. Ties
+    break deterministically on ``Chunk.id``. Returns
+    ``(chunk, document, similarity)`` with similarity ``1 - distance``
+    (higher = more similar), ordered best-first.
+    """
+    distance = Chunk.embedding.cosine_distance(query_vector)
+    similarity = (1 - distance).label("similarity")
+    query = (
+        select(Chunk, Document, similarity)
+        .join(Document, Document.id == Chunk.document_id)
+        .where(Chunk.embedding.is_not(None))
+        .where(Chunk.embedding_model == model_name)
+        .where(Chunk.embedding_version == model_version)
+    )
+    if document_id is not None:
+        query = query.where(Chunk.document_id == document_id)
+    if document_type is not None:
+        query = query.where(Document.document_type == document_type)
+    query = query.order_by(desc(similarity), Chunk.id.asc()).limit(limit)
+    return [(chunk, doc, float(score)) for chunk, doc, score in session.execute(query).all()]

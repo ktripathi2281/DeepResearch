@@ -40,6 +40,12 @@ class Settings(BaseSettings):
     embedding_device: str = Field(default="auto")
     embedding_normalize: bool = Field(default=True)
 
+    # Milestone 5: vector retrieval (see ADR-005). Default top-K 5 matches
+    # the evaluation baseline (Recall@5); the cap prevents accidentally
+    # returning the whole corpus. Over-limit requests raise, never clamp.
+    retrieval_top_k: int = Field(default=5, ge=1)
+    retrieval_max_top_k: int = Field(default=100, ge=1)
+
 
 def get_settings() -> Settings:
     return Settings()

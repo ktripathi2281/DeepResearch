@@ -1,4 +1,4 @@
-# DeepResearch — Milestones 1–4: Foundation + Schema + Ingestion + Embeddings
+# DeepResearch — Milestones 1–5: + Vector Retrieval
 
 Local-first, evidence-based research assistant. M1 built the development
 foundation (Python project, FastAPI skeleton, PostgreSQL + pgvector via
@@ -8,9 +8,11 @@ the persistence foundation: `documents` + `chunks` tables, pgvector
 PDF/Markdown/TXT/HTML parsing, sha256 content hashing, idempotent
 persist, token chunking (800/120 defaults). M4 adds local embeddings:
 `BAAI/bge-small-en-v1.5` (384-d, L2-normalized) via `sentence-transformers`,
-batched `embed_pending_chunks()` with idempotent reruns.
+batched `embed_pending_chunks()` with idempotent reruns. M5 adds cosine
+vector retrieval: query → provider → pgvector `<=>` → ranked
+`RetrievalResult`s (score = `1 − distance`, top-K default 5 / max 100).
 
-No retrieval, BM25, reranking, generation, agent, eval, or frontend yet.
+No BM25, hybrid, reranking, generation, agent, eval, or frontend yet.
 
 ## Repository layout (root = `C:\Users\tripa\Projects\DeepResearch`)
 
@@ -20,7 +22,7 @@ No retrieval, BM25, reranking, generation, agent, eval, or frontend yet.
 ├── docs/               # PRD, architecture, evaluation, prompts
 ├── evals/              # reserved (datasets/runners, M16+)
 ├── infra/              # migrations/001_initial.sql + deploy extras
-├── src/deepresearch/   # config, logging, db, models, repository, parsing/chunking/ingestion/embeddings, main
+├── src/deepresearch/   # config, logging, db, models, repository, parsing/chunking/ingestion/embeddings/retrieval, main
 ├── tests/              # unit (sqlite) + PG integration + fixtures/
 ├── docker-compose.yml
 ├── Dockerfile
@@ -135,6 +137,27 @@ cache; reruns skip embedded chunks (`embedded=0`). Vectors are
 L2-normalized 384-d; model/version recorded per chunk. Details:
 `docs/adr/004-embeddings.md`.
 
+## Retrieval (M5)
+
+```powershell
+python -c "
+from deepresearch.config import get_settings
+from deepresearch.db import get_engine, get_session_factory
+from deepresearch.embeddings import LocalEmbeddingProvider
+from deepresearch.retrieval import retrieve
+s = get_settings(); engine = get_engine(s)
+provider = LocalEmbeddingProvider(model_name=s.embedding_model, device=s.embedding_device)
+with get_session_factory(engine)() as session:
+    for r in retrieve(session, provider, 'hybrid retrieval', top_k=s.retrieval_top_k):
+        print(round(r.score, 4), r.chunk_index, r.text[:80])
+"
+```
+
+Cosine similarity (`1 − pgvector distance`, higher = more similar),
+exact search (no approximate index at this corpus size), deterministic
+tie-breaks, unembedded/foreign-model chunks excluded. Details:
+`docs/adr/005-vector-retrieval.md`.
+
 ## Tests
 
 ```powershell
@@ -168,7 +191,7 @@ ruff format src tests   # apply fixes
 6. Fixed `PRODUCT_REQUIREMENTS.md` numbering: `7A→8`, `8→9`, `9→10` (content unchanged).
 7. Hardware/models frozen: LOQ 16GB/6GB, `qwen3:4b Q4_K_M`, `bge-small-en-v1.5`, `bge-reranker-base`, optional `gemma3:4b`; no larger models or paid APIs without approval.
 
-## What's next (not in M4)
+## What's next (not in M5)
 
-Milestone 5: semantic retrieval over pgvector (top-K, metadata
-filtering, deterministic tie order) — no BM25/hybrid yet.
+Milestone 6: BM25 lexical retrieval (in-Python, behind its own
+interface, kept separate from vector retrieval) — no hybrid yet.
