@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.orm import Session
 
 from deepresearch.embeddings import EmbeddingProvider
+from deepresearch.generation import MAX_QUESTION_CHARS
 from deepresearch.hybrid import retrieve_hybrid
 from deepresearch.llm import LLMError, LLMProvider
 from deepresearch.logging import get_logger
@@ -294,11 +295,20 @@ def build_agent_prompt(question: str, trace: AgentTrace, evidence_ids: set[uuid.
 
 
 def _validate_arguments(decision: AgentDecision) -> dict:
-    """Check per-action argument shapes; raises AgentError when unusable."""
+    """Check per-action argument shapes; raises AgentError when unusable.
+
+    Unknown argument keys are rejected: the model may only supply the
+    documented parameters for each action (fail closed on extras).
+    """
     args = decision.arguments or {}
     if decision.action == ACTION_FINISH:
+        if args:
+            raise AgentError(f"finish takes no arguments, got {sorted(args)}")
         return {}
     if decision.action == TOOL_SEARCH:
+        unknown = set(args) - {"query", "top_k"}
+        if unknown:
+            raise AgentError(f"search_documents got unexpected arguments: {sorted(unknown)}")
         query = args.get("query")
         if not isinstance(query, str) or not query.strip():
             raise AgentError("search_documents requires a non-empty 'query' string")
@@ -308,6 +318,9 @@ def _validate_arguments(decision: AgentDecision) -> dict:
         return {"query": query.strip(), "top_k": top_k}
     if decision.action in (TOOL_GET_CHUNK, TOOL_GET_DOCUMENT):
         key = "chunk_id" if decision.action == TOOL_GET_CHUNK else "document_id"
+        unknown = set(args) - {key}
+        if unknown:
+            raise AgentError(f"{decision.action} got unexpected arguments: {sorted(unknown)}")
         value = args.get(key)
         if not isinstance(value, str) or not value.strip():
             raise AgentError(f"{decision.action} requires a non-empty '{key}' string")
@@ -425,6 +438,10 @@ def run_research_agent(
     """
     if not question or not question.strip():
         raise AgentError("question must be non-empty text")
+    if len(question) > MAX_QUESTION_CHARS:
+        raise AgentError(
+            f"question exceeds {MAX_QUESTION_CHARS} characters ({len(question)} given)"
+        )
     for name, value, minimum in (
         ("max_iterations", max_iterations, 1),
         ("max_tool_calls", max_tool_calls, 1),

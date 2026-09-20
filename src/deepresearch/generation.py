@@ -65,6 +65,10 @@ NO_EVIDENCE_MESSAGE = (
 )
 DEFAULT_GENERATION_TEMPERATURE = 0.0
 
+# Smallest explicit resource guard (see ADR-017): bound question length
+# so prompts stay within local-model context and latency budgets.
+MAX_QUESTION_CHARS = 4000
+
 SYSTEM_INSTRUCTIONS = """\
 You are a careful research assistant. Follow these rules exactly:
 
@@ -233,6 +237,10 @@ def answer_question(
     """
     if not question or not question.strip():
         raise GenerationError("question must be non-empty text")
+    if len(question) > MAX_QUESTION_CHARS:
+        raise GenerationError(
+            f"question exceeds {MAX_QUESTION_CHARS} characters ({len(question)} given)"
+        )
     validate_top_k(evidence_top_k, maximum=max_top_k)
     started = time.perf_counter()
     hybrid_results = retrieve_hybrid(

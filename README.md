@@ -1,4 +1,4 @@
-# DeepResearch — Milestones 1–16: + Evaluation Framework
+# DeepResearch — Milestones 1–17: + Security & Adversarial Testing
 
 Local-first, evidence-based research assistant. M1 built the development
 foundation (Python project, FastAPI skeleton, PostgreSQL + pgvector via
@@ -397,6 +397,21 @@ serialize to `evals/results/` (git-ignored). The shipped
 benchmark. Details: `docs/EVALUATION.md`,
 `docs/adr/ADR-016-evaluation-framework.md`.
 
+## Security (M17)
+
+Threat model and trust boundaries: `docs/SECURITY.md` (retrieved
+text is untrusted data; 3 read-only agent tools; content-free
+observability). Tested properties: 8-attack injection corpus stays
+data (`tests/fixtures/adversarial.txt`), tool allowlist + argument
+abuse rejected fail-closed, structured output bounded
+(parse→validate→repair→reject), citations strictly `[N]`-mapped,
+agent exhaustion terminates, poisoned corpora keep provenance with
+conflict status, fake secrets never reach logs/traces. Explicit
+guards only where inputs were unbounded: 4000-char questions, 10 MB
+documents, NUL-byte sanitization. No absolute-security claim —
+see limitations in `docs/SECURITY.md`. Details:
+`docs/adr/ADR-017-security-adversarial-testing.md`.
+
 ## Tests
 
 ```powershell
@@ -430,8 +445,8 @@ ruff format src tests   # apply fixes
 6. Fixed `PRODUCT_REQUIREMENTS.md` numbering: `7A→8`, `8→9`, `9→10` (content unchanged).
 7. Hardware/models frozen: LOQ 16GB/6GB, `qwen3:4b Q4_K_M`, `bge-small-en-v1.5`, `bge-reranker-base`, optional `gemma3:4b`; no larger models or paid APIs without approval.
 
-## What's next (not in M16)
+## What's next (not in M17)
 
-Milestone 17: evaluation experiments (baselines and comparisons on
-larger reviewed datasets using this framework) — no production
+Milestone 18: security evaluation suite (per-attack pass/fail
+records with mitigations, rerun after fixes) — no production
 serving yet.

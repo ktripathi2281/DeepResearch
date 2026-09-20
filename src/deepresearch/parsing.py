@@ -43,6 +43,11 @@ class ParsedDocument:
 
 _MD_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
 
+# Smallest explicit resource guard (see ADR-017): bound input size and
+# strip NUL bytes, which PostgreSQL TEXT/JSON reject outright (a corrupt
+# or hostile file must fail closed with ParsingError, never crash a query).
+MAX_DOCUMENT_BYTES = 10_000_000
+
 
 def normalize_document_type(document_type: str) -> str:
     key = document_type.strip().lower().lstrip(".")
@@ -58,7 +63,12 @@ def parse_bytes(raw: bytes, *, document_type: str, source: str = "") -> ParsedDo
     ``source`` is used only for error messages. Empty-but-valid inputs
     (blank TXT/MD/HTML, text-less PDF) yield zero units — the ingestion
     layer persists those as chunk-less documents. Corrupt inputs raise.
+    Inputs over ``MAX_DOCUMENT_BYTES`` are rejected; NUL bytes are
+    stripped because PostgreSQL cannot store them.
     """
+    doc_type = normalize_document_type(document_type)
+    if len(raw) > MAX_DOCUMENT_BYTES:
+        raise ParsingError(f"document exceeds {MAX_DOCUMENT_BYTES} bytes ({len(raw)} given)")
     doc_type = normalize_document_type(document_type)
     if doc_type == "txt":
         return _parse_txt(raw)
@@ -71,9 +81,10 @@ def parse_bytes(raw: bytes, *, document_type: str, source: str = "") -> ParsedDo
 
 def _decode_text(raw: bytes, *, kind: str) -> str:
     try:
-        return raw.decode("utf-8-sig")
+        text = raw.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
         raise ParsingError(f"cannot decode {kind} bytes as UTF-8: {exc}") from exc
+    return text.replace("\x00", "")
 
 
 def _parse_txt(raw: bytes) -> ParsedDocument:
@@ -144,13 +155,13 @@ def _parse_pdf(raw: bytes, *, source: str = "") -> ParsedDocument:
     try:
         meta = reader.metadata
         if meta and getattr(meta, "title", None):
-            title = str(meta.title) or None
+            title = str(meta.title).replace("\x00", "") or None
     except Exception:
         title = None
     units: list[TextUnit] = []
     for page_number, page in enumerate(reader.pages, start=1):
         try:
-            text = page.extract_text() or ""
+            text = (page.extract_text() or "").replace("\x00", "")
         except Exception as exc:
             raise ParsingError(f"cannot extract text from PDF page {page_number}: {exc}") from exc
         for line in text.splitlines():
