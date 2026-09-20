@@ -353,6 +353,35 @@ Answer
 prompt → provider. Generation is provider-agnostic (any
 `LLMProvider`); empty evidence short-circuits without an LLM call.
 
+Implemented in M11 (see `docs/adr/ADR-011-citations.md`) — citation
+association, not verification (that is §9 / M12):
+
+```text
+Evidence
+   |
+   +---- citation IDs
+   |
+   v
+Grounded Prompt
+   |
+   v
+LLM Answer
+   |
+   v
+Citation Extraction
+   |
+   v
+GroundedAnswer
+  + answer
+  + evidence
+  + citations
+```
+
+Evidence blocks carry `Citation [N]` markers; the prompt orders the
+model to cite only shown markers for supported claims. Extraction
+maps `[N]` back to evidence (first-use order, deduplicated);
+out-of-range markers are retained as invalid references for M12.
+
 ## 9. Citation verification
 
 Pipeline:
@@ -381,6 +410,61 @@ Possible verification states:
 - UNSUPPORTED
 - CONFLICTING
 - UNVERIFIABLE
+
+Implemented in M12 (see `docs/adr/ADR-012-citation-verification.md`)
+as an LLM-assisted baseline with a narrower status set:
+
+```text
+Answer
+   ↓
+Claims
+   ↓
+Citation Mapping
+   ↓
+Evidence
+   ↓
+LLM Verification
+   ↓
+Verification Report
+```
+
+Sentence-unit claims → one verifier call per cited claim (claim +
+all cited evidence) → Pydantic-validated JSON verdicts
+(`supported`/`unsupported`/`insufficient_evidence`), with
+`invalid_citation`/`uncited`/`unverifiable` tracked explicitly.
+Extraction (M11) and verification (here) stay separate from
+evaluation metrics (M16).
+
+Implemented in M13 (see `docs/adr/ADR-013-no-answer-and-conflict-handling.md`):
+
+```text
+Evidence
+   |
+   +---- no evidence? ----> No Answer
+   |
+   v
+Conflict Detection
+   |
+   +---- conflict ----> Conflict-aware generation
+   |
+   v
+Grounded Generation
+   |
+   v
+Citations
+   |
+   v
+Verification
+   |
+   v
+Answer Status
+```
+
+`GroundedAnswer.status` is `no_evidence` / `insufficient_evidence` /
+`answered` / `conflicting_evidence` — distinct from M12 per-claim
+verdicts. Numeric contradictions in shared context set the conflict
+path; verification-based `unsupported`/`unverifiable` rows set the
+insufficient path; both sources of a conflict are always preserved.
 
 ## 10. Agent design
 

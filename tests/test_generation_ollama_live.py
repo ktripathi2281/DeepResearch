@@ -78,10 +78,28 @@ def test_live_grounded_generation() -> None:
             assert result.has_evidence is True
             assert result.answer.strip()
             assert result.model_name == "qwen3:4b"
+            # M13: fixture evidence carries no contradictions → answered.
+            assert result.status == "answered"
+            assert result.conflicts == []
             print(
                 f"\n[live-generation] model={result.model_version} "
                 f"latency_ms={elapsed_ms} evidence={len(result.evidence)} "
                 f"answer={result.answer.strip()[:120]!r}"
+            )
+
+            # M11 extension: extraction must be consistent with the answer.
+            # No correctness claim — only that markers map within range and
+            # in first-use order.
+            from deepresearch.citations import extract_citations
+
+            repeat = extract_citations(result.answer, result.evidence)
+            assert [c.citation_id for c in repeat.citations] == [
+                c.citation_id for c in result.citations
+            ]
+            assert all(1 <= c.citation_id <= len(result.evidence) for c in result.citations)
+            print(
+                f"[live-citations] citations={[c.citation_id for c in result.citations]} "
+                f"invalid={[i.citation_id for i in result.invalid_citations]}"
             )
     finally:
         try:

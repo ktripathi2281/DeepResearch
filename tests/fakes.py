@@ -150,3 +150,31 @@ class FakeLLMProvider:
         if self._fail:
             raise LLMError("fake LLM forced failure")
         return self._answer
+
+
+class FakeVerifierLLM(FakeLLMProvider):
+    """Scripted verifier: pops one canned JSON/text response per call."""
+
+    def __init__(self, *, responses: list[str], model_name: str = "fake-verifier") -> None:
+        super().__init__(answer="", model_name=model_name, model_version="fake-vv")
+        self._responses = list(responses)
+
+    def generate(
+        self,
+        prompt: str,
+        *,
+        system_prompt: str | None = None,
+        temperature: float = 0.0,
+        max_tokens: int | None = None,
+    ) -> str:
+        self.calls.append(
+            {
+                "prompt": prompt,
+                "system_prompt": system_prompt,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+        )
+        if not self._responses:
+            raise LLMError("fake verifier has no scripted response left")
+        return self._responses.pop(0)

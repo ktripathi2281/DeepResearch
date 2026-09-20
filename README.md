@@ -1,4 +1,4 @@
-# DeepResearch — Milestones 1–10: + Grounded Generation
+# DeepResearch — Milestones 1–13: + No-Answer & Conflict Handling
 
 Local-first, evidence-based research assistant. M1 built the development
 foundation (Python project, FastAPI skeleton, PostgreSQL + pgvector via
@@ -21,9 +21,16 @@ scores, top 20 → top 5, `method="reranked"`). M9 adds the generation
 capability: `LLMProvider` abstraction + `OllamaLLMProvider`
 (`qwen3:4b`, timeouts, typed errors). M10 wires it up: hybrid →
 rerank → delimited grounded prompt → plain-text `GroundedAnswer`
-with evidence and model identity — no citations yet.
+with evidence and model identity. M11 adds citations: evidence
+blocks carry `Citation [N]` markers, the model is instructed to cite
+only shown markers, and markers are extracted back to evidence
+(first-use order, invalid references retained). M12 verifies each
+cited claim against its cited evidence with the local LLM
+(JSON verdicts: supported/unsupported/insufficient_evidence, plus
+explicit invalid/uncited/unverifiable states) — an LLM-assisted
+baseline that itself needs evaluation, not a correctness proof.
 
-No citations, agent, eval, or frontend yet.
+No agents, eval framework, or frontend yet.
 
 ## Repository layout (root = `C:\Users\tripa\Projects\DeepResearch`)
 
@@ -33,7 +40,7 @@ No citations, agent, eval, or frontend yet.
 ├── docs/               # PRD, architecture, evaluation, prompts
 ├── evals/              # reserved (datasets/runners, M16+)
 ├── infra/              # migrations/001_initial.sql + deploy extras
-├── src/deepresearch/   # config, logging, db, models, repository, parsing/chunking/ingestion/embeddings/retrieval/bm25/hybrid/reranker/llm/generation, main
+├── src/deepresearch/   # config, logging, db, models, repository, parsing/chunking/ingestion/embeddings/retrieval/bm25/hybrid/reranker/llm/generation/citations/verification/answer_status, main
 ├── tests/              # unit (sqlite) + PG integration + fixtures/
 ├── docker-compose.yml
 ├── Dockerfile
@@ -289,13 +296,29 @@ with get_session_factory(engine)() as session:
 ```
 
 `answer_question` runs hybrid → rerank → delimited evidence prompt →
-LLM, returning a `GroundedAnswer` (answer text, evidence,
-model identity). Empty evidence short-circuits to a fixed
-no-evidence message without calling the LLM; retrieved text stays
-untrusted data inside evidence blocks. Requires ingested + embedded
-chunks and a running Ollama. Details:
-`docs/adr/ADR-010-grounded-generation.md`. No citations yet — those
-are M11. No factual-accuracy or production-readiness claim is made.
+LLM, returning a `GroundedAnswer` (answer text, evidence, citations,
+model identity). Evidence blocks carry `Citation [N]` markers; the
+answer's markers are extracted back to evidence in first-use order,
+with out-of-range markers retained as invalid references. Pass
+`verify_citations=True` to judge each cited claim against its cited
+evidence with the local LLM (JSON verdicts; `GroundedAnswer.
+verification_report`): supported / unsupported / insufficient_evidence,
+plus explicit invalid / uncited / unverifiable states. Empty evidence
+short-circuits without calling any LLM; retrieved text stays untrusted
+data inside evidence blocks. Requires ingested + embedded chunks and
+a running Ollama (also for live verification). Details:
+`docs/adr/ADR-010-grounded-generation.md`,
+`docs/adr/ADR-011-citations.md`,
+`docs/adr/ADR-012-citation-verification.md`. Verification is an
+LLM-assisted baseline that itself needs evaluation — not a
+correctness proof. M13 adds explicit outcomes: `status` is
+`no_evidence` (fixed message, zero LLM calls), `insufficient_evidence`
+(unsupported/unverifiable cited rows), `answered`, or
+`conflicting_evidence` (deterministic numeric contradictions; both
+sources preserved, conflict-aware prompting). Details:
+`docs/adr/ADR-013-no-answer-and-conflict-handling.md`. Conflict
+detection is conservative — no perfect-detection claim is made. No
+factual-accuracy or production-readiness claim is made.
 
 ## Tests
 
@@ -330,8 +353,8 @@ ruff format src tests   # apply fixes
 6. Fixed `PRODUCT_REQUIREMENTS.md` numbering: `7A→8`, `8→9`, `9→10` (content unchanged).
 7. Hardware/models frozen: LOQ 16GB/6GB, `qwen3:4b Q4_K_M`, `bge-small-en-v1.5`, `bge-reranker-base`, optional `gemma3:4b`; no larger models or paid APIs without approval.
 
-## What's next (not in M10)
+## What's next (not in M13)
 
-Milestone 11: citation system (application-generated citation IDs,
-claim→chunk mapping, invalid-citation rejection, evidence lookup) —
-no citation verification yet.
+Milestone 14: bounded research agent (search/chunk/document tools,
+iteration and tool-call caps, timeouts, no arbitrary code) — no web
+search yet.
