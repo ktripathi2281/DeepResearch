@@ -1,4 +1,4 @@
-# DeepResearch — Milestones 1–5: + Vector Retrieval
+# DeepResearch — Milestones 1–6: + BM25 Lexical Retrieval
 
 Local-first, evidence-based research assistant. M1 built the development
 foundation (Python project, FastAPI skeleton, PostgreSQL + pgvector via
@@ -11,8 +11,11 @@ persist, token chunking (800/120 defaults). M4 adds local embeddings:
 batched `embed_pending_chunks()` with idempotent reruns. M5 adds cosine
 vector retrieval: query → provider → pgvector `<=>` → ranked
 `RetrievalResult`s (score = `1 − distance`, top-K default 5 / max 100).
+M6 adds in-process Okapi BM25 over `Chunk.text` (`k1=1.5`, `b=0.75`):
+same `RetrievalResult` shape with `method="bm25"`, snapshot index with
+explicit refresh — fully independent from vector retrieval.
 
-No BM25, hybrid, reranking, generation, agent, eval, or frontend yet.
+No hybrid, reranking, generation, agent, eval, or frontend yet.
 
 ## Repository layout (root = `C:\Users\tripa\Projects\DeepResearch`)
 
@@ -22,7 +25,7 @@ No BM25, hybrid, reranking, generation, agent, eval, or frontend yet.
 ├── docs/               # PRD, architecture, evaluation, prompts
 ├── evals/              # reserved (datasets/runners, M16+)
 ├── infra/              # migrations/001_initial.sql + deploy extras
-├── src/deepresearch/   # config, logging, db, models, repository, parsing/chunking/ingestion/embeddings/retrieval, main
+├── src/deepresearch/   # config, logging, db, models, repository, parsing/chunking/ingestion/embeddings/retrieval/bm25, main
 ├── tests/              # unit (sqlite) + PG integration + fixtures/
 ├── docker-compose.yml
 ├── Dockerfile
@@ -158,6 +161,26 @@ exact search (no approximate index at this corpus size), deterministic
 tie-breaks, unembedded/foreign-model chunks excluded. Details:
 `docs/adr/005-vector-retrieval.md`.
 
+## Lexical retrieval (M6)
+
+```powershell
+python -c "
+from deepresearch.config import get_settings
+from deepresearch.db import get_engine, get_session_factory
+from deepresearch.bm25 import BM25Retriever
+s = get_settings(); engine = get_engine(s)
+with get_session_factory(engine)() as session:
+    retriever = BM25Retriever(k1=s.bm25_k1, b=s.bm25_b)
+    for r in retriever.retrieve(session, 'hybrid retrieval', top_k=s.retrieval_top_k):
+        print(round(r.score, 4), r.chunk_index, r.text[:80])
+"
+```
+
+Okapi BM25 (`k1=1.5`, `b=0.75`) over `Chunk.text`, lowercased M3
+tokens, no stemming. Snapshot index with explicit refresh (stale use
+raises); zero-score docs excluded. Independent from vector retrieval —
+no fusion yet. Details: `docs/adr/006-bm25-lexical.md`.
+
 ## Tests
 
 ```powershell
@@ -191,7 +214,8 @@ ruff format src tests   # apply fixes
 6. Fixed `PRODUCT_REQUIREMENTS.md` numbering: `7A→8`, `8→9`, `9→10` (content unchanged).
 7. Hardware/models frozen: LOQ 16GB/6GB, `qwen3:4b Q4_K_M`, `bge-small-en-v1.5`, `bge-reranker-base`, optional `gemma3:4b`; no larger models or paid APIs without approval.
 
-## What's next (not in M5)
+## What's next (not in M6)
 
-Milestone 6: BM25 lexical retrieval (in-Python, behind its own
-interface, kept separate from vector retrieval) — no hybrid yet.
+Milestone 7: hybrid retrieval (score/rank fusion over the independent
+vector + BM25 paths, deduplication, configurable weights) — no
+reranking yet.

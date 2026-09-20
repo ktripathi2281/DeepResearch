@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     retrieval_top_k: int = Field(default=5, ge=1)
     retrieval_max_top_k: int = Field(default=100, ge=1)
 
+    # Milestone 6: BM25 defaults (see ADR-006). Standard Okapi values;
+    # configurable so M7 experiments can vary them explicitly.
+    bm25_k1: float = Field(default=1.5, gt=0)
+    bm25_b: float = Field(default=0.75, ge=0, le=1)
+
 
 def get_settings() -> Settings:
     return Settings()

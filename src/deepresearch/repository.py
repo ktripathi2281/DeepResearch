@@ -162,3 +162,60 @@ def search_chunks_by_vector(
         query = query.where(Document.document_type == document_type)
     query = query.order_by(desc(similarity), Chunk.id.asc()).limit(limit)
     return [(chunk, doc, float(score)) for chunk, doc, score in session.execute(query).all()]
+
+
+def list_chunks_for_bm25(
+    session: Session,
+    *,
+    document_id: uuid.UUID | None = None,
+    document_type: str | None = None,
+) -> list[tuple[Chunk, Document]]:
+    """Corpus rows for BM25 indexing (M6): all chunks with their documents.
+
+    Deterministically ordered by ``Chunk.id`` so index positions (and
+    therefore tie-breaks) are stable across rebuilds. Plain SELECT —
+    works on any backend.
+    """
+    query = (
+        select(Chunk, Document)
+        .join(Document, Document.id == Chunk.document_id)
+        .order_by(Chunk.id.asc())
+    )
+    if document_id is not None:
+        query = query.where(Chunk.document_id == document_id)
+    if document_type is not None:
+        query = query.where(Document.document_type == document_type)
+    return list(session.execute(query).all())
+
+
+def get_chunks_with_documents_by_ids(
+    session: Session, chunk_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, tuple[Chunk, Document]]:
+    """Fetch (chunk, document) rows for known chunk IDs (M6 winner lookup)."""
+    if not chunk_ids:
+        return {}
+    rows = session.execute(
+        select(Chunk, Document)
+        .join(Document, Document.id == Chunk.document_id)
+        .where(Chunk.id.in_(chunk_ids))
+    ).all()
+    return {chunk.id: (chunk, doc) for chunk, doc in rows}
+
+
+def list_chunk_ids_for_freshness(
+    session: Session,
+    *,
+    document_id: uuid.UUID | None = None,
+    document_type: str | None = None,
+) -> list[uuid.UUID]:
+    """Chunk IDs in index order, without texts (M6 cheap staleness check)."""
+    query = select(Chunk.id).order_by(Chunk.id.asc())
+    if document_id is not None:
+        query = query.where(Chunk.document_id == document_id)
+    if document_type is not None:
+        query = query.where(
+            Chunk.document_id.in_(
+                select(Document.id).where(Document.document_type == document_type)
+            )
+        )
+    return list(session.scalars(query))
