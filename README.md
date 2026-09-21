@@ -1,6 +1,18 @@
 ﻿# DeepResearch
 
+[![CI](https://github.com/ktripathi2281/DeepResearch/actions/workflows/ci.yml/badge.svg)](https://github.com/ktripathi2281/DeepResearch/actions)
+
+`Python · FastAPI · Next.js / React / TypeScript · PostgreSQL + pgvector · Ollama qwen3:4b · 429 backend + 46 frontend tests`
+
 DeepResearch helps investigate complex questions across a document corpus and produce evidence-backed answers with citations and verification — running locally, with no paid APIs.
+
+> **Live demo:** [`docs/DEMO.md`](docs/DEMO.md) — 4 scenarios (grounded answer, abstention, conflicting evidence, prompt-injection handling) against the real local pipeline. Allow ~20–30 minutes for a first setup/run including model downloads.
+
+## Screenshots
+
+<!-- Pending real captures — do not add placeholders or mockups.
+     Expected: docs/assets/ui-question.png (question + progress),
+     docs/assets/ui-answer.png (answer + citations + evidence). -->
 
 ## What it does
 
@@ -141,7 +153,7 @@ with get_session_factory(engine)() as session:
 "
 ```
 
-Supported inputs: PDF, Markdown, TXT, HTML. Ingestion is idempotent on content hash; embeddings are batched and rerunnable. Reference: `infra/migrations/001_initial.sql` for the schema.
+Supported inputs: PDF, Markdown, TXT, HTML. Ingestion is idempotent on content hash; embeddings are batched and rerunnable. Reference: `infra/migrations/001_initial.sql` for the schema. Tip: ingest demo/experiment documents into an isolated database (e.g. `deepresearch_demo` via `DATABASE_URL`) so the shared dev database used by integration tests stays untouched — see `docs/DEMO.md`.
 
 ### Asking a grounded question (Python)
 
@@ -198,6 +210,8 @@ print(dataset.version, len(dataset.cases), 'cases')
 ```
 
 `eval-dev-v1` (8 cases, 7 documents, one case per category: single/multi-document, exact-lookup, semantic, multi-hop, no-answer, conflict, injection) is a **development fixture, not a representative benchmark**. Metrics (Recall@3/5/10, MRR, correctness, faithfulness, citation correctness/completeness, abstention, conflict, P50/P95 latency) are intended for controlled comparisons between configs, never for general claims. Details: `docs/EVALUATION.md`.
+
+Measured on 2026-09-21 against the real local pipeline (`hybrid_reranked`, top-5, bge-small-en-v1.5, bge-reranker-base, Ollama `qwen3:4b`; experiment `7c75b06d2b77512d`, 8 cases, 0 errors, 0 skipped): Recall@3/5/10 = **1.0**, MRR = **0.93**, answer correctness = **0.86**, citation completeness = **1.0**, latency P50 ≈ 12 s / P95 ≈ 60 s (single dev machine). Faithfulness and citation correctness were `null` (unevaluable — the verifier returned no usable rows on this run, see Limitations). Full record with caveats: `docs/EVALUATION_RESULTS.md`.
 
 ## Security
 
@@ -289,6 +303,7 @@ The pipeline, agent, verifier, and evaluation take the same `LLMProvider` either
 - Small development evaluation dataset (`eval-dev-v1`, 8 cases): controlled comparisons only, not a benchmark.
 - Local-model latency: first runs load embedding/reranker weights; each Ollama call takes tens of seconds on the reference hardware.
 - Verifier quality is not independently benchmarked; it is an LLM-assisted baseline.
+- Observed live: `qwen3:4b` is a thinking model, so capped output budgets can be consumed entirely by thinking, yielding empty text. Generation runs uncapped and is reliable; an empty verifier response fails the job closed (safe error, never a partial answer) — retrying normally completes.
 - Conflict detection covers numeric contradictions in shared context only — not negations, paraphrases, or unit mismatches.
 - Security tests are layered mitigations on synthetic fixtures; they do not prove immunity.
 - No authentication, no persistent user history, no web search in v1.

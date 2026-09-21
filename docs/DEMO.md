@@ -1,4 +1,4 @@
-# DeepResearch — Live Demo (5–10 minutes)
+# DeepResearch — Live Demo (~20–30 minutes first run, including model downloads)
 
 All behaviors below were observed against the real local pipeline
 (PostgreSQL + pgvector, `bge-small-en-v1.5`, `bge-reranker-base`,
@@ -14,10 +14,23 @@ Ollama `qwen3:4b`). Nothing here uses fakes or mocks.
 ## Startup
 
 Use an isolated demo database so the shared dev database (used by
-integration tests) stays untouched. Seed four short documents (a
-retrieval explainer, two disagreeing moonflower notes, one field
-note containing an instruction-injection string) through the real
-ingestion + embedding pipeline.
+integration tests) stays untouched. Seed it from the repo (real
+ingestion + embedding pipeline, idempotent — safe to re-run):
+
+```powershell
+python scripts/seed_demo.py
+# -> ingested demo-retrieval.md / demo-plant-a.md / demo-plant-b.md / demo-injection.md
+# -> embedded: 4 chunks, model=BAAI/bge-small-en-v1.5
+```
+
+The corpus is intentionally built so **every question retrieves all
+four chunks**, and two of them genuinely disagree (moonflower
+introduced in 2022 vs 2024). Expect `conflicting_evidence` on every
+scenario below: that status is the system working as designed
+(conflict outranks verification per the documented precedence),
+while the answers themselves stay grounded and cited. The
+pure-`answered` path is covered by automated tests on consistent
+corpora.
 
 ```powershell
 # Shell 1 — backend
@@ -49,14 +62,9 @@ Observed: `completed`, correct answer citing `[1]` (vector +
 lexical search, Reciprocal Rank Fusion, cross-encoder reranker),
 4 evidence items. Clicking `[1]` scrolls to and highlights the
 source chunk; **Research details** shows request ID, elapsed time,
-counts, verification tallies, and model names.
-
-Note: on this tiny demo corpus every question retrieves all four
-chunks — including the disagreeing pair below — so the status reads
-`conflicting_evidence` while the answer itself is fully supported.
-That precedence (conflict outranks verification) is the documented
-M13 behavior; the pure-`answered` path is covered by automated
-tests on consistent corpora.
+counts, verification tallies, and model names. (Status reads
+`conflicting_evidence` for the corpus reason above — the answer
+itself is fully supported.)
 
 ### 2. No supporting evidence — abstention, not invention
 
@@ -95,6 +103,8 @@ fails the job closed (`failed`, safe error, request ID — never a
 partial answer). Retrying the same question normally completes.
 This is documented fail-closed behavior, not data loss: server logs
 retain the full traceback for diagnosis.
+
+## What to point at in the UI
 
 - **Progress**: stage names map 1:1 to backend `traced_stage`
   transitions with real millisecond durations. No percentages.

@@ -1,13 +1,6 @@
 
 # Hardware and model constraint — apply to every milestone
 
-> M21 note (historical mapping, prompts below unchanged): this file is
-> the original roadmap. As implemented, milestones M17–M21 differ:
-> M17 = security & adversarial testing, M18 = frontend & research
-> experience, M19 = provider abstraction & optional cloud providers,
-> M20 = production polish & reliability, M21 = final validation &
-> portfolio readiness. M1–M16 match.
-
 Before implementing model-dependent code, use this initial local stack:
 
 Hardware:

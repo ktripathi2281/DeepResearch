@@ -7,7 +7,9 @@ pip install -e ".[dev]"
 pytest -v
 ```
 
-Needs: nothing (fakes + SQLite by default). ~430 tests, ~1 minute.
+Needs: nothing (fakes + SQLite by default). Backend suite is
+~430 tests: ~1 minute without live models, ~4–5 minutes when the
+opt-in live-model tests execute (Ollama + `qwen3:4b` present).
 
 ## Frontend tests
 
@@ -101,8 +103,8 @@ Requirement matrix:
 
 | Suite | Docker/PG | Ollama | Cloud keys | Network |
 |---|---|---|---|---|
-| Backend unit | no (skips) | no (skips) | no | no |
-| PG integration | yes | no | no | no |
+| Backend unit | no | no (live tests skip) | no | no |
+| PG integration | yes (others skip) | no | no | no |
 | Frontend | no | no | no | no (mocked) |
 | Security | partial (1 file) | no | no (sentinels) | no |
 | Evaluation | partial (1 file) | no | no | no |
