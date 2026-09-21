@@ -1,4 +1,4 @@
-﻿# DeepResearch — Milestones 1–19: + Provider Abstraction & Optional Cloud Providers
+﻿# DeepResearch — Milestones 1–20: + Production Polish & Reliability
 
 Local-first, evidence-based research assistant. M1 built the development
 foundation (Python project, FastAPI skeleton, PostgreSQL + pgvector via
@@ -72,7 +72,10 @@ No nested `deepresearch/` repo directory: `src/`, `tests/`, `evals/`,
 ## Prerequisites
 
 - Python 3.11+ (dev machine uses 3.12 slim in Docker; 3.14 works locally)
+- Node 24+ with npm (frontend only; dev machine uses Node 24.12 / npm 11)
 - Docker + Docker Compose plugin (for `postgres` + `api` services)
+- PostgreSQL + pgvector (via Compose, or any reachable instance)
+- Ollama with `qwen3:4b` — optional for startup, required for real local answers (`ollama pull qwen3:4b`)
 - No paid API keys required
 
 ## Quickstart (local, without Docker)
@@ -89,10 +92,16 @@ pip install -e ".[dev]"
 # 3. Configure
 Copy-Item .env.example .env
 
-# 4. Run API
+# 4. Start infrastructure (Postgres + pgvector)
+docker compose up -d postgres
+
+# 5. (Optional, for real answers) start Ollama and pull the model
+ollama pull qwen3:4b
+
+# 6. Run API
 uvicorn deepresearch.main:app --host 0.0.0.0 --port 8000 --reload
 
-# 5. Verify
+# 7. Verify
 Invoke-RestMethod http://localhost:8000/health
 Invoke-RestMethod http://localhost:8000/ready   # 503 if Postgres is down (expected)
 ```
@@ -483,10 +492,17 @@ ruff format src tests   # apply fixes
 
 ## Endpoints
 
-- `GET /health` → `{"status":"ok",...}` (liveness, no DB)
-- `GET /ready` → `200 {"status":"ready"}` or `503 {"status":"not_ready"}` (DB check)
-- `POST /api/research` → `202` job snapshot (`{"question":"..."}`; 422 on empty/>4000 chars)
+- `GET /health` → `{"status":"ok",...}` (liveness: process alive, no dependencies)
+- `GET /ready` → `200 {"status":"ready"}` or `503 {"status":"not_ready"}` (can accept research work: PostgreSQL reachable AND provider selection valid; the model daemon itself is never probed)
+- `POST /api/research` → `202` job snapshot (`{"question":"..."}`; 422 on empty/>4000 chars; 503 `shutting_down` envelope once shutdown starts)
 - `GET /api/research/{request_id}` → job snapshot (`running`/`completed`/`failed`; 404 unknown)
+
+Every response carries `X-Request-ID` (preserved when the client
+sends a valid one, generated otherwise). On the job itself the ID
+lives in response bodies (`request_id`, `result.request_id`,
+`research_details.request_id`); poll-request headers echo only that
+poll's own HTTP request ID. Unexpected failures return a safe 500
+envelope (`message` + `type` + `request_id`, never a stack trace).
 
 Example research request (backend on `:8000`, Postgres + models running):
 
@@ -527,6 +543,36 @@ sees prompts, chain-of-thought, secrets, or stack traces. Full
 boundary documentation: `docs/ARCHITECTURE.md` and
 `docs/adr/ADR-018-frontend-research-experience.md`.
 
+## Operations (M20)
+
+Health/readiness: `/health` stays 200 while dependencies are down;
+`/ready` is 503 until PostgreSQL is reachable and the provider
+selection is valid. Startup validates configuration and refuses to
+serve on misconfiguration (clear message, no secrets). Shutdown
+marks running jobs `failed` (`type: "interrupted"`), closes provider
+HTTP clients, and disposes the engine; in-memory jobs do not survive
+restarts, and at most `RESEARCH_MAX_RETAINED_JOBS` (default 100)
+terminal jobs are kept — running jobs are never evicted.
+
+Timeouts (all pre-existing; documented, not added):
+
+| Boundary | Value | Notes |
+|---|---|---|
+| Research submit/poll (HTTP) | none server-side | FastAPI returns immediately; frontend polls with a 5-minute client timeout |
+| Research execution | bounded by callees | agent cap 60 s; each LLM call bounded by its provider timeout |
+| Provider calls | 120 s default (`*_timeout_seconds`) | `LLMTimeoutError`, no retries |
+| DB connects | 10 s (`DB_CONNECT_TIMEOUT_SECONDS`) | readiness fails fast instead of hanging |
+| Frontend poll | 5 min, 1 s interval | client-side only |
+
+### Troubleshooting
+
+- `/ready` is 503: check PostgreSQL is up (`docker compose up -d postgres`, then `pg_isready`), and that `LLM_PROVIDER` names a valid provider with its key set when cloud-selected. Server logs carry the reason; bodies intentionally do not.
+- Startup fails with `invalid configuration: ...`: fix the named variable in `.env` (see `.env.example` sections for required vs optional). Never paste real keys into chat/logs.
+- Research jobs fail with `type: "interrupted"`: the server shut down mid-job; resubmit.
+- Slow first request: embedding/reranker models load lazily on first real pipeline run, not at startup.
+- Fresh database: schema is created idempotently by `init_db` on first backend use (`CREATE EXTENSION IF NOT EXISTS vector` + tables); the manual reference is `infra/migrations/001_initial.sql`. Nothing ever deletes data at startup.
+- Docker Desktop was restarted: containers exit; `docker start deepresearch-postgres-1` (or `docker compose up -d postgres`) and wait for `(healthy)`.
+
 ## Decisions locked before Milestone 1
 
 1. Root is `C:\Users\tripa\Projects\DeepResearch`; no nested repo dir.
@@ -537,8 +583,8 @@ boundary documentation: `docs/ARCHITECTURE.md` and
 6. Fixed `PRODUCT_REQUIREMENTS.md` numbering: `7A→8`, `8→9`, `9→10` (content unchanged).
 7. Hardware/models frozen: LOQ 16GB/6GB, `qwen3:4b Q4_K_M`, `bge-small-en-v1.5`, `bge-reranker-base`, optional `gemma3:4b`; no larger models or paid APIs without approval.
 
-## What's next (not in M19)
+## What's next (not in M20)
 
-Milestone 20+: authentication, conversation history, document upload
+Milestone 21+: authentication, conversation history, document upload
 UI, dashboards, production deployment — all explicitly out of scope
-for M19 (see milestone boundary in the M19 brief).
+for M20 (see milestone boundary in the M20 brief).

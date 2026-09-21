@@ -794,6 +794,58 @@ Rules:
 
 See `docs/adr/ADR-018-frontend-research-experience.md` for rationale.
 
+## 18. Runtime lifecycle (M20)
+
+How the service starts, proves it can work, sheds load, and stops
+(see `docs/adr/ADR-020-production-polish.md`).
+
+```text
+start
+  |
+load + validate settings (fail fast, secret-free message)
+  |
+serve (/health alive immediately)
+  |
+/ready? DB reachable + provider selectable -> accept research
+  |
+jobs: running -> completed | failed (bounded retention)
+  |
+shutdown: reject submits (503) -> mark running interrupted
+       -> close HTTP clients -> dispose engine -> exit
+```
+
+1. **Configuration.** Field bounds reject bad numbers/ports at
+   load; `validate_for_runtime()` (provider name, CORS origins,
+   database scheme) runs in the lifespan before serving.
+2. **Health vs readiness.** `/health` = process alive, no
+   dependencies, fixed shape. `/ready` = DB `SELECT 1` plus lazy
+   provider construction both succeed; the model daemon is never
+   probed. Bodies are exactly `{"status": ...}`; diagnostics go to
+   JSON logs (request-ID aware, content-free allowlist).
+3. **Jobs.** `ResearchService` is a thread-safe in-memory store:
+   one worker thread per job, terminal states final per job
+   object, resubmit-while-running is idempotent, resubmit-terminal
+   starts fresh. Retention keeps at most
+   `research_max_retained_jobs` terminal jobs (oldest first);
+   running jobs are never evicted.
+4. **Shutdown.** New submissions get a `shutting_down` 503;
+   running jobs become `failed` with `type: "interrupted"`.
+   Provider clients (one reused client per adapter) are closed,
+   the engine disposed. Jobs do not survive restarts — documented,
+   not pretended otherwise.
+5. **Timeouts.** Submission/polling have no server-side timeout;
+   execution is bounded by provider timeouts (120 s), the agent
+   cap (60 s), and single-repair verification; DB connects are
+   capped at 10 s; the frontend polls with a 5-minute client
+   timeout.
+6. **Local runtime.** `docker compose up -d postgres` (healthy
+   `pgvector/pg16`), optional Ollama + `qwen3:4b`, backend via
+   uvicorn, frontend via `npm run dev`. The `api` container has a
+   `/health` healthcheck (stdlib urllib — the slim image has no
+   curl). Fresh databases initialize idempotently via `init_db`;
+   `infra/migrations/001_initial.sql` is the manual reference.
+   No Alembic, no Redis, no queues, no Kubernetes.
+
 
 ## Initial local model configuration
 

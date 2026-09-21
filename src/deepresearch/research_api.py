@@ -37,7 +37,9 @@ from collections.abc import Callable
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from deepresearch.answer_status import AnswerStatus
@@ -289,6 +291,10 @@ def to_research_result(
 # --- research service (in-memory job store + background execution) ----------
 
 
+class ResearchServiceClosedError(RuntimeError):
+    """The service is shut down; new submissions are rejected (mapped to 503)."""
+
+
 class ResearchJob:
     """Mutable per-request job state; mutated in the worker thread."""
 
@@ -331,6 +337,14 @@ class ResearchService:
     the single injection point: the default implementation runs the
     unchanged M10 pipeline (``answer_question`` with verification);
     tests inject deterministic fakes so no database or model is needed.
+
+    Lifecycle per job: ``running`` → ``completed`` | ``failed``.
+    Terminal states are final for that job object: resubmitting an ID
+    whose job is still running returns the running snapshot (no second
+    thread, no state corruption); resubmitting a terminal ID starts a
+    fresh job object. ``shutdown()`` rejects new submissions and marks
+    running jobs failed-interrupted — in-memory jobs never pretend to
+    complete across a restart (see ADR-020).
     """
 
     def __init__(
@@ -339,16 +353,28 @@ class ResearchService:
         session_factory: Callable[[], Session],
         researcher: Callable[[Session, str, str], GroundedAnswer],
         run_async: bool = True,
+        max_retained_jobs: int = 100,
     ) -> None:
+        if max_retained_jobs < 1:
+            raise ValueError(f"max_retained_jobs must be >= 1, got {max_retained_jobs}")
         self._session_factory = session_factory
         self._researcher = researcher
         self._run_async = run_async
+        self._max_retained_jobs = max_retained_jobs
         self._jobs: dict[str, ResearchJob] = {}
+        self._accepting = True
         self._lock = threading.Lock()
 
     def submit(self, question: str, request_id: str) -> ResearchJobSnapshot:
-        job = ResearchJob(request_id=request_id, question=question.strip())
         with self._lock:
+            if not self._accepting:
+                raise ResearchServiceClosedError(
+                    "research service is shut down; submissions are closed"
+                )
+            existing = self._jobs.get(request_id)
+            if existing is not None and existing.job_status == "running":
+                return existing.snapshot()
+            job = ResearchJob(request_id=request_id, question=question.strip())
             self._jobs[request_id] = job
         if self._run_async:
             thread = threading.Thread(
@@ -366,6 +392,45 @@ class ResearchService:
         with self._lock:
             job = self._jobs.get(request_id)
             return job.snapshot() if job is not None else None
+
+    def shutdown(self, *, reason: str = "server shutdown") -> int:
+        """Close submissions; mark running jobs failed-interrupted.
+
+        Returns the number of jobs marked. Terminal jobs are untouched;
+        the store keeps them for post-mortem polling until evicted.
+        """
+        with self._lock:
+            self._accepting = False
+            running = [job for job in self._jobs.values() if job.job_status == "running"]
+        marked = 0
+        for job in running:
+            with job._lock:  # noqa: SLF001 — internal job state
+                if job.job_status != "running":
+                    continue  # finished racing with shutdown: leave it alone
+                job.job_status = "failed"
+                job.error = ErrorInfo(
+                    message=f"Research was interrupted by {reason}.",
+                    type="interrupted",
+                    request_id=job.request_id,
+                )
+                marked += 1
+        return marked
+
+    def _evict_terminal_locked(self) -> None:
+        """Drop oldest terminal jobs beyond the retention bound.
+
+        Caller must hold ``self._lock``. Running jobs are never
+        candidates; dict insertion order makes eviction deterministic
+        (oldest terminal first).
+        """
+        terminal = [
+            request_id
+            for request_id, job in self._jobs.items()
+            if job.job_status in ("completed", "failed")
+        ]
+        overflow = len(terminal) - self._max_retained_jobs
+        for request_id in terminal[: max(0, overflow)]:
+            del self._jobs[request_id]
 
     def _execute(self, job: ResearchJob) -> None:
         try:
@@ -389,6 +454,9 @@ class ResearchService:
                     type=type(exc).__name__,
                     request_id=job.request_id,
                 )
+        finally:
+            with self._lock:
+                self._evict_terminal_locked()
 
 
 # --- default wiring (real pipeline) ------------------------------------------
@@ -444,8 +512,10 @@ def default_researcher(session: Session, question: str, request_id: str) -> Grou
 
 def default_session_factory() -> Callable[[], Session]:
     """Prepared DB session factory; schema sync is best-effort at boot."""
+    global _default_engine
     settings = get_settings()
     engine = get_engine(settings)
+    _default_engine = engine
     try:
         init_db(engine)
     except Exception:  # noqa: BLE001 — availability is reported by job failure
@@ -455,17 +525,51 @@ def default_session_factory() -> Callable[[], Session]:
 
 
 _default_service: ResearchService | None = None
+_default_engine: Engine | None = None
 
 
 def get_research_service() -> ResearchService:
     """FastAPI dependency: one shared in-memory service per process."""
     global _default_service
     if _default_service is None:
+        settings = get_settings()
         _default_service = ResearchService(
             session_factory=default_session_factory(),
             researcher=default_researcher,
+            max_retained_jobs=settings.research_max_retained_jobs,
         )
     return _default_service
+
+
+def close_default_resources(*, reason: str = "server shutdown") -> int:
+    """Graceful-shutdown hook for the process-wide research runtime.
+
+    Marks running default jobs failed-interrupted (never pretending
+    they completed), closes provider HTTP clients, and disposes the
+    database engine. Safe to call when nothing was initialized
+    (returns 0). The closed service object is kept so late
+    submissions still get a controlled 503 instead of rebuilding.
+    """
+    global _default_providers, _default_engine
+    interrupted = 0
+    if _default_service is not None:
+        interrupted = _default_service.shutdown(reason=reason)
+    if _default_providers is not None:
+        for provider in _default_providers.values():
+            close = getattr(provider, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:  # noqa: BLE001 — shutdown must not hang on cleanup
+                    logger.exception("provider client close failed during shutdown")
+        _default_providers = None
+    if _default_engine is not None:
+        try:
+            _default_engine.dispose()
+        except Exception:  # noqa: BLE001 — shutdown must not hang on cleanup
+            logger.exception("engine dispose failed during shutdown")
+        _default_engine = None
+    return interrupted
 
 
 # --- routes ------------------------------------------------------------------
@@ -485,7 +589,19 @@ def start_research(  # type: ignore[no-untyped-def]
 ) -> ResearchJobSnapshot:
     """Start research. M15 request ID is preserved or minted; no client ID needed."""
     request_id = normalize_request_id(request.headers.get(REQUEST_ID_HEADER))
-    return service.submit(payload.question, request_id)
+    try:
+        return service.submit(payload.question, request_id)
+    except ResearchServiceClosedError:
+        return JSONResponse(  # type: ignore[return-value]
+            status_code=503,
+            content={
+                "error": {
+                    "message": "Server is shutting down; research submissions are closed.",
+                    "type": "shutting_down",
+                    "request_id": request_id,
+                }
+            },
+        )
 
 
 @router.get("/research/{request_id}", response_model=ResearchJobSnapshot)

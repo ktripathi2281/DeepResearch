@@ -13,9 +13,20 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from deepresearch.config import Settings
 
+# Milestone 20: bound connection establishment. Without this, an
+# unreachable database can block first-request initialization for
+# minutes (observed: ~260 s of psycopg retries). Readiness and startup
+# must fail fast instead. This is failure bounding, not pool tuning:
+# pool size/recycle behavior is intentionally untouched.
+DB_CONNECT_TIMEOUT_SECONDS = 10
+
 
 def get_engine(settings: Settings) -> Engine:
-    return create_engine(settings.database_url, pool_pre_ping=True)
+    return create_engine(
+        settings.database_url,
+        pool_pre_ping=True,
+        connect_args={"connect_timeout": DB_CONNECT_TIMEOUT_SECONDS},
+    )
 
 
 def get_session_factory(engine: Engine) -> sessionmaker[Session]:

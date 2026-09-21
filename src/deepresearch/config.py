@@ -5,10 +5,23 @@ embedding configuration (bge-small-en-v1.5, batch 32, device auto).
 Hardware constraints (Lenovo LOQ, 16 GB RAM, 6 GB VRAM,
 qwen3:4b / bge-small-en-v1.5 / bge-reranker-base) are documented in
 docs/ and must not change without explicit approval.
+
+Milestone 20 adds explicit runtime validation
+(``Settings.validate_for_runtime``): field-level pydantic bounds catch
+bad numbers/ports at load, while cross-cutting checks (provider name,
+CORS origins, database scheme) run eagerly at startup via the
+lifespan so misconfiguration fails fast with a clear, secret-free
+message instead of surfacing as a mysterious job failure later.
 """
+
+from __future__ import annotations
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class ConfigurationError(ValueError):
+    """A setting is invalid for runtime use; message names the problem, never secrets."""
 
 
 class Settings(BaseSettings):
@@ -19,7 +32,7 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO")
 
     api_host: str = Field(default="0.0.0.0")
-    api_port: int = Field(default=8000)
+    api_port: int = Field(default=8000, ge=1, le=65535)
 
     # Milestone 18: browser origins allowed to call the research API.
     # Comma-separated list; credentials are never enabled, so this is
@@ -102,6 +115,72 @@ class Settings(BaseSettings):
     agent_max_iterations: int = Field(default=8, ge=1)
     agent_max_tool_calls: int = Field(default=12, ge=1)
     agent_timeout_seconds: float = Field(default=60, gt=0)
+
+    # Milestone 20: bounded in-memory job retention (see ADR-020). Each
+    # retained job holds its answer plus evidence text; 100 bounds
+    # worst-case memory to single-digit megabytes. Only terminal jobs
+    # (completed/failed) are ever evicted, oldest first; running jobs
+    # are never evicted.
+    research_max_retained_jobs: int = Field(default=100, ge=1)
+
+    def validate_for_runtime(self) -> Settings:
+        """Fail fast on configuration that cannot serve research.
+
+        Called once at application startup (lifespan), not at import:
+        ``Settings(...)`` itself stays permissive so tests and tools
+        can construct arbitrary instances. Every message names valid
+        values; no message ever includes credentials, keys, or URLs
+        carrying them.
+        """
+        from deepresearch.providers import KNOWN_PROVIDERS  # deferred: providers imports config
+
+        name = (self.llm_provider or "").strip().lower()
+        if name not in KNOWN_PROVIDERS:
+            raise ConfigurationError(
+                f"invalid LLM_PROVIDER {self.llm_provider!r}; "
+                f"expected one of: {', '.join(KNOWN_PROVIDERS)}"
+            )
+        self._validate_cors_origins()
+        self._validate_database_url()
+        return self
+
+    def _validate_cors_origins(self) -> None:
+        from urllib.parse import urlparse
+
+        entries = [entry.strip() for entry in (self.cors_origins or "").split(",")]
+        entries = [entry for entry in entries if entry]
+        for entry in entries:
+            if entry == "*":
+                raise ConfigurationError(
+                    "invalid CORS_ORIGINS '*': list explicit browser origins instead "
+                    "(e.g. CORS_ORIGINS=http://localhost:3000)"
+                )
+            parsed = urlparse(entry)
+            if parsed.scheme not in ("http", "https") or not parsed.hostname:
+                raise ConfigurationError(
+                    f"invalid CORS_ORIGINS entry {entry!r}: expected an http(s) origin "
+                    "like http://localhost:3000"
+                )
+            if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+                raise ConfigurationError(
+                    f"invalid CORS_ORIGINS entry {entry!r}: origins carry no path, "
+                    "query, or fragment"
+                )
+
+    def _validate_database_url(self) -> None:
+        from sqlalchemy.engine.url import make_url
+        from sqlalchemy.exc import ArgumentError
+
+        try:
+            url = make_url(self.database_url)
+        except ArgumentError as exc:
+            raise ConfigurationError("invalid DATABASE_URL: not a parseable database URL") from exc
+        backend = (url.get_backend_name() or "").lower()
+        if not backend.startswith("postgresql"):
+            raise ConfigurationError(
+                f"invalid DATABASE_URL backend {backend!r}: this service requires "
+                "a postgresql database (pgvector); got a different backend"
+            )
 
 
 def get_settings() -> Settings:

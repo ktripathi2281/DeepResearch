@@ -23,7 +23,10 @@ class JsonFormatter(logging.Formatter):
         }
         # Attach common structured context if present. Only these explicit
         # keys ever reach the log — prompts, documents, secrets, and
-        # headers have no key here by design (see ADR-015).
+        # headers have no key here by design (see ADR-015). M20 adds a
+        # few operational facts (service/env/provider/model/port/job
+        # counts); these carry deployment metadata only, never
+        # credentials, prompts, or content.
         for key in (
             "request_id",
             "stage",
@@ -34,6 +37,12 @@ class JsonFormatter(logging.Formatter):
             "event",
             "status",
             "error_type",
+            "service",
+            "env",
+            "provider",
+            "llm_model",
+            "api_port",
+            "interrupted_jobs",
         ):
             value = getattr(record, key, None)
             if value is not None:
