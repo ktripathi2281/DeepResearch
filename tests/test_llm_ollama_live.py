@@ -51,7 +51,11 @@ def test_live_ollama_qwen_smoke() -> None:
     provider = OllamaLLMProvider.from_settings(settings)
     try:
         started = time.perf_counter()
-        answer = provider.generate("Reply with exactly: OK", temperature=0.0, max_tokens=16)
+        # No max_tokens cap here: qwen3:4b is a thinking model and spends
+        # small token budgets thinking, returning empty text (M21 live
+        # finding). Cap plumbing is covered by unit tests; this smoke
+        # test only proves daemon + model + version capture.
+        answer = provider.generate("Reply with exactly: OK", temperature=0.0)
         elapsed_ms = int((time.perf_counter() - started) * 1000)
     finally:
         provider.close()

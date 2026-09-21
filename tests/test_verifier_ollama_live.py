@@ -45,7 +45,11 @@ def test_live_verifier_returns_parsable_decision() -> None:
             "Hybrid retrieval combines vector and lexical search [1].",
             [_evidence("Hybrid retrieval combines dense vector search with lexical matching.")],
             provider,
-            max_tokens=128,
+            # Generous bound (thinking alone runs ~2700 tokens on this
+            # prompt; M21 live finding): qwen3:4b consumes capped
+            # budgets thinking and returns empty text, which the repair
+            # path turns into unverifiable instead of a verdict.
+            max_tokens=4096,
         )
     finally:
         provider.close()

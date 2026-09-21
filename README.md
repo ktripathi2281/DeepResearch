@@ -1,335 +1,149 @@
-﻿# DeepResearch — Milestones 1–20: + Production Polish & Reliability
+﻿# DeepResearch
 
-Local-first, evidence-based research assistant. M1 built the development
-foundation (Python project, FastAPI skeleton, PostgreSQL + pgvector via
-Docker Compose, health/readiness, env config, logging, pytest). M2 adds
-the persistence foundation: `documents` + `chunks` tables, pgvector
-`VECTOR(384)`, repository layer. M3 adds deterministic ingestion:
-PDF/Markdown/TXT/HTML parsing, sha256 content hashing, idempotent
-persist, token chunking (800/120 defaults). M4 adds local embeddings:
-`BAAI/bge-small-en-v1.5` (384-d, L2-normalized) via `sentence-transformers`,
-batched `embed_pending_chunks()` with idempotent reruns. M5 adds cosine
-vector retrieval: query → provider → pgvector `<=>` → ranked
-`RetrievalResult`s (score = `1 − distance`, top-K default 5 / max 100).
-M6 adds in-process Okapi BM25 over `Chunk.text` (`k1=1.5`, `b=0.75`):
-same `RetrievalResult` shape with `method="bm25"`, snapshot index with
-explicit refresh — fully independent from vector retrieval. M7 fuses
-both paths with Reciprocal Rank Fusion (`rrf_k=60`, candidate pools
-`2 × top_k`) into `method="hybrid"` results. M8 reranks those
-candidates with local `BAAI/bge-reranker-base` (raw cross-encoder
-scores, top 20 → top 5, `method="reranked"`). M9 adds the generation
-capability: `LLMProvider` abstraction + `OllamaLLMProvider`
-(`qwen3:4b`, timeouts, typed errors). M10 wires it up: hybrid →
-rerank → delimited grounded prompt → plain-text `GroundedAnswer`
-with evidence and model identity. M11 adds citations: evidence
-blocks carry `Citation [N]` markers, the model is instructed to cite
-only shown markers, and markers are extracted back to evidence
-(first-use order, invalid references retained). M12 verifies each
-cited claim against its cited evidence with the local LLM
-(JSON verdicts: supported/unsupported/insufficient_evidence, plus
-explicit invalid/uncited/unverifiable states) — an LLM-assisted
-baseline that itself needs evaluation, not a correctness proof.
-M13 adds explicit outcomes (`no_evidence` / `insufficient_evidence` /
-`answered` / `conflicting_evidence`). M14 adds a bounded research
-agent (3 read-only tools, hard caps). M15 adds request tracing
-(stages, counters, per-role models). M16 makes it measurable:
-versioned eval datasets, Recall@K/MRR, deterministic
-answer/citation/abstention/conflict metrics, P50/P95 latencies, and
-fingerprinted experiments across vector/BM25/hybrid/reranked
-configs — measurements only, never winners.
+DeepResearch helps investigate complex questions across a document corpus and produce evidence-backed answers with citations and verification — running locally, with no paid APIs.
 
-No frontend yet.
+## What it does
 
-M18 adds the first user-facing interface: a Next.js/React/TypeScript
-app in `frontend/` (question input → real progress stages → answer
-with clickable citations → evidence panel → safe research details),
-backed by a minimal new HTTP boundary (`POST /api/research`,
-`GET /api/research/{request_id}`) that exposes only the safe public
-representation of the existing pipeline. Details below in
-"Frontend (M18)".
+A user asks a complex question. DeepResearch retrieves relevant evidence from an indexed corpus (vector + keyword search, fused and reranked), generates an answer constrained to that evidence, attaches `[N]` citations that resolve to real chunks, verifies each cited claim against its cited evidence, and reports an explicit outcome: `answered`, `insufficient_evidence`, `conflicting_evidence`, or `no_evidence`. Every request carries an ID, records a timing trace, and surfaces safe research details in the UI.
 
-## Repository layout (root = `C:\Users\tripa\Projects\DeepResearch`)
+## Why it is different
+
+Ordinary search returns a ranked list of documents and leaves judging to the reader. DeepResearch runs a **research workflow**: retrieve → rerank → answer under evidence constraint → cite → verify → abstain or flag conflict when the evidence does not support an answer. Unsupported claims are caught by a verifier rather than shown as fact, disagreements between sources are preserved instead of silently merged, and missing evidence produces an explicit refusal rather than an invention.
+
+No claim is made beyond what is measured: verification is an LLM-assisted baseline (not a correctness proof), conflict detection covers numeric contradictions in shared context only, and the shipped evaluation dataset is a development fixture, not a benchmark.
+
+## Architecture
+
+```text
+User
+  ↓
+Next.js (question, progress, citations, evidence, details)
+  ↓
+FastAPI (POST /api/research, GET /api/research/{id}, /health, /ready)
+  ↓
+Research Service (jobs: running → completed | failed)
+  ↓
+Agent / Retrieval (bounded agent, 3 read-only tools)
+  ↓
+Vector (pgvector) + BM25 (RRF fusion)
+  ↓
+Reranker (local cross-encoder)
+  ↓
+Grounded LLM (Ollama qwen3:4b default; optional providers)
+  ↓
+Citation Verification (claim × evidence verdicts)
+  ↓
+Answer + Evidence (status, citations, conflicts, trace summary)
+```
+
+Supporting systems: PostgreSQL + pgvector storage, in-memory request tracing (no external platform), versioned evaluation runner, adversarial security suite. A Mermaid version of this map lives in `docs/ARCHITECTURE.md` (§19).
+
+## Key engineering features
+
+- Hybrid retrieval: pgvector cosine + in-process Okapi BM25 (`k1=1.5`, `b=0.75`), fused with Reciprocal Rank Fusion (`rrf_k=60`)
+- Local cross-encoder reranking (`bge-reranker-base`, top 20 → top 5, `method="reranked"`)
+- Evidence-grounded generation: delimited evidence blocks, system rules (evidence is data, cite only shown markers, say when insufficient, never invent sources)
+- Citations that resolve to real chunks; out-of-range markers retained as invalid references, never remapped
+- Citation verification per cited claim (`supported`/`unsupported`/`insufficient_evidence`, plus explicit `invalid_citation`/`uncited`/`unverifiable`)
+- Conflict handling: deterministic numeric-contradiction detection, both sides preserved, conflict-aware prompting
+- Bounded research agent (8 iterations, 12 tool calls, 60 s; read-only tools only)
+- Observability: per-request stages, counters, per-role models, optional token counts — never prompts, documents, reasoning, or secrets
+- Evaluation framework: versioned datasets, Recall@3/5/10, MRR, citation/abstention/conflict metrics, P50/P95 latencies, fingerprinted experiment configs
+- Adversarial testing: injection corpus, tool-allowlist abuse, malformed structured output, resource exhaustion, Unicode, log-leakage regression
+- Provider abstraction: `LLMProvider` with Ollama default plus optional OpenAI-compatible and Gemini adapters behind one factory
+- Reliability controls: startup config validation, health-vs-readiness split, bounded job retention, graceful shutdown with interruption marking, safe error envelopes
+
+## Repository layout
 
 ```text
 .
-├── apps/               # reserved (future web/API wrappers, M19)
-├── docs/               # PRD, architecture, evaluation, prompts
-├── evals/              # reserved (datasets/runners, M16+)
-├── frontend/           # M18: Next.js/React/TS UI (app, components, lib, types, tests)
-├── infra/              # migrations/001_initial.sql + deploy extras
-├── src/deepresearch/   # config, logging, db, models, repository, parsing/chunking/ingestion/embeddings/retrieval/bm25/hybrid/reranker/llm/generation/citations/verification/answer_status/agent/observability/evaluation/eval_runner, main
-├── tests/              # unit (sqlite) + PG integration + fixtures/
-├── docker-compose.yml
+├── apps/               # reserved scratch space (only .gitkeep)
+├── docs/               # PRD, architecture (incl. Mermaid map), evaluation, security, DEMO, ADRs
+├── evals/              # datasets/eval-dev-v1.json, results/ (git-ignored)
+├── frontend/           # Next.js/React/TypeScript UI (app, components, lib, types, tests)
+├── infra/              # migrations/001_initial.sql (manual reference)
+├── src/deepresearch/   # backend: config, db, ingestion, retrieval, generation, agent,
+│                       # observability, evaluation, providers, research API, main
+├── tests/              # unit (sqlite/fakes) + PostgreSQL integration + fixtures/
+├── docker-compose.yml  # postgres (pgvector:pg16) + api
 ├── Dockerfile
 ├── pyproject.toml
 ├── .env.example
 └── README.md
 ```
 
-No nested `deepresearch/` repo directory: `src/`, `tests/`, `evals/`,
-`apps/`, `infra/`, `docs/` live directly under the root.
-
 ## Prerequisites
 
-- Python 3.11+ (dev machine uses 3.12 slim in Docker; 3.14 works locally)
-- Node 24+ with npm (frontend only; dev machine uses Node 24.12 / npm 11)
-- Docker + Docker Compose plugin (for `postgres` + `api` services)
-- PostgreSQL + pgvector (via Compose, or any reachable instance)
-- Ollama with `qwen3:4b` — optional for startup, required for real local answers (`ollama pull qwen3:4b`)
+- Python 3.11+ (Docker uses 3.12 slim; 3.14 works locally)
+- Node 24+ with npm (frontend only)
+- Docker + Docker Compose plugin (PostgreSQL + pgvector)
+- Ollama with `qwen3:4b` — optional for startup, required for real local answers (`ollama pull qwen3:4b`; no larger models, no substitutes)
 - No paid API keys required
 
-## Quickstart (local, without Docker)
+## Local setup
 
 ```powershell
-# 1. Create and activate venv
+# 1. Python environment
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-
-# 2. Install (editable + dev)
 pip install -U pip
 pip install -e ".[dev]"
 
-# 3. Configure
+# 2. Configure
 Copy-Item .env.example .env
 
-# 4. Start infrastructure (Postgres + pgvector)
+# 3. Start infrastructure (PostgreSQL + pgvector)
 docker compose up -d postgres
 
-# 5. (Optional, for real answers) start Ollama and pull the model
+# 4. (Optional, for real answers) start Ollama and pull the model
 ollama pull qwen3:4b
+```
 
-# 6. Run API
+### Starting backend
+
+```powershell
+# From the repo root (uvicorn reads .env via settings)
 uvicorn deepresearch.main:app --host 0.0.0.0 --port 8000 --reload
 
-# 7. Verify
-Invoke-RestMethod http://localhost:8000/health
-Invoke-RestMethod http://localhost:8000/ready   # 503 if Postgres is down (expected)
+# Verify
+Invoke-RestMethod http://localhost:8000/health   # -> ok (process alive, no dependencies)
+Invoke-RestMethod http://localhost:8000/ready    # -> ready (503 while Postgres is down)
 ```
 
-## Quickstart (Docker — full local stack)
+Or the full stack: `docker compose up --build` (API on `:8000`, Postgres on `:5432`).
+
+### Starting frontend
 
 ```powershell
-Copy-Item .env.example .env
-docker compose up --build
-# API:     http://localhost:8000/health
-# Postgres: localhost:5432 (user/pass/db: deepresearch)
-docker compose down
+cd frontend
+npm install
+# Point the UI at the backend (default is http://localhost:8000)
+$env:NEXT_PUBLIC_API_BASE_URL = "http://localhost:8000"
+npm run dev    # http://localhost:3000
 ```
 
-Postgres image is `pgvector/pgvector:pg16` so the vector extension is
-available for Milestone 2 without changing images.
+Ask a question → watch real pipeline stages → read the answer → click `[N]` citations to jump to evidence → inspect **Research details** (request ID, timings, counts, verification, models).
 
-## Database schema (M2)
-
-Tables: `documents` (id UUID, title, source, content_hash UNIQUE,
-document_type, metadata JSON, created_at) and `chunks` (id UUID,
-document_id FK CASCADE, text, chunk_index, section/page nullable,
-metadata JSON, embedding VECTOR(384) NULL, embedding_model/version NULL,
-created_at; UNIQUE(document_id, chunk_index)).
-
-`content_hash` is the ingestion idempotency key (M3). `embedding` stays
-NULL until M4 — see `docs/adr/001-postgres-pgvector-schema.md`.
-Migration strategy (`create_all` + versioned SQL, Alembic deferred):
-`docs/adr/002-migration-strategy.md`.
+### Ingesting documents
 
 ```powershell
-# SQLite-safe default not needed — schema targets Postgres:
-docker compose up -d postgres
-python -c "from deepresearch.config import get_settings; from deepresearch.db import get_engine, init_db; init_db(get_engine(get_settings()))"
-# Canonical DDL for review: infra/migrations/001_initial.sql
-```
-
-## Ingestion (M3)
-
-```powershell
-docker compose up -d postgres
-python -c "from deepresearch.config import get_settings; from deepresearch.db import get_engine, init_db; init_db(get_engine(get_settings()))"
-python -c "
-from pathlib import Path
-from deepresearch.config import get_settings
-from deepresearch.db import get_engine, get_session_factory, init_db
-from deepresearch.ingestion import ingest_file
-engine = get_engine(get_settings()); init_db(engine)
-with get_session_factory(engine)() as s:
-    r = ingest_file(s, path='tests/fixtures/sample.md')
-    print(r.document.document_type, len(r.chunks), r.duplicate)
-"
-```
-
-Pipeline: bytes → `parsing.parse_bytes` → sha256 hash → hash lookup →
-`chunking.chunk_units` (target/overlap from `Settings`: 800/120) →
-`repository` persist. Re-ingesting identical content returns existing
-rows (`duplicate=True`). Details: `docs/adr/003-ingestion-chunking.md`.
-
-## Embeddings (M4)
-
-```powershell
-docker compose up -d postgres
 python -c "
 from deepresearch.config import get_settings
 from deepresearch.db import get_engine, get_session_factory, init_db
 from deepresearch.embeddings import LocalEmbeddingProvider, embed_pending_chunks
+from deepresearch.ingestion import ingest_file
 s = get_settings(); engine = get_engine(s); init_db(engine)
-provider = LocalEmbeddingProvider(model_name=s.embedding_model, device=s.embedding_device)
 with get_session_factory(engine)() as session:
-    print(embed_pending_chunks(session, provider, batch_size=s.embedding_batch_size))
+    result = ingest_file(session, path='docs/DEMO.md', title='Demo doc')
+    print(len(result.chunks), 'chunks; duplicate =', result.duplicate)
+    outcome = embed_pending_chunks(session, LocalEmbeddingProvider())
+    print('embedded:', outcome.embedded)
 "
 ```
 
-First run downloads `BAAI/bge-small-en-v1.5` (~130 MB) once to the HF
-cache; reruns skip embedded chunks (`embedded=0`). Vectors are
-L2-normalized 384-d; model/version recorded per chunk. Details:
-`docs/adr/004-embeddings.md`.
+Supported inputs: PDF, Markdown, TXT, HTML. Ingestion is idempotent on content hash; embeddings are batched and rerunnable. Reference: `infra/migrations/001_initial.sql` for the schema.
 
-## Retrieval (M5)
-
-```powershell
-python -c "
-from deepresearch.config import get_settings
-from deepresearch.db import get_engine, get_session_factory
-from deepresearch.embeddings import LocalEmbeddingProvider
-from deepresearch.retrieval import retrieve
-s = get_settings(); engine = get_engine(s)
-provider = LocalEmbeddingProvider(model_name=s.embedding_model, device=s.embedding_device)
-with get_session_factory(engine)() as session:
-    for r in retrieve(session, provider, 'hybrid retrieval', top_k=s.retrieval_top_k):
-        print(round(r.score, 4), r.chunk_index, r.text[:80])
-"
-```
-
-Cosine similarity (`1 − pgvector distance`, higher = more similar),
-exact search (no approximate index at this corpus size), deterministic
-tie-breaks, unembedded/foreign-model chunks excluded. Details:
-`docs/adr/005-vector-retrieval.md`.
-
-## Lexical retrieval (M6)
-
-```powershell
-python -c "
-from deepresearch.config import get_settings
-from deepresearch.db import get_engine, get_session_factory
-from deepresearch.bm25 import BM25Retriever
-s = get_settings(); engine = get_engine(s)
-with get_session_factory(engine)() as session:
-    retriever = BM25Retriever(k1=s.bm25_k1, b=s.bm25_b)
-    for r in retriever.retrieve(session, 'hybrid retrieval', top_k=s.retrieval_top_k):
-        print(round(r.score, 4), r.chunk_index, r.text[:80])
-"
-```
-
-Okapi BM25 (`k1=1.5`, `b=0.75`) over `Chunk.text`, lowercased M3
-tokens, no stemming. Snapshot index with explicit refresh (stale use
-raises); zero-score docs excluded. Details: `docs/adr/006-bm25-lexical.md`.
-
-## Hybrid retrieval (M7)
-
-```powershell
-python -c "
-from deepresearch.config import get_settings
-from deepresearch.db import get_engine, get_session_factory
-from deepresearch.embeddings import LocalEmbeddingProvider
-from deepresearch.hybrid import retrieve_hybrid
-s = get_settings(); engine = get_engine(s)
-provider = LocalEmbeddingProvider(model_name=s.embedding_model, device=s.embedding_device)
-with get_session_factory(engine)() as session:
-    for r in retrieve_hybrid(session, provider, 'hybrid retrieval', top_k=s.retrieval_top_k):
-        print(round(r.score, 4), r.chunk_index, r.text[:80])
-"
-```
-
-Vector + BM25 candidates fused with RRF (`1 / (rrf_k + rank)`,
-`rrf_k=60`): candidate pools `2 × top_k`, union dedup by chunk ID,
-single query embedding, failures propagate. Baseline fusion — M16
-experiments will measure it against each path alone. Details:
-`docs/adr/ADR-007-hybrid-retrieval.md`.
-
-## Reranking (M8)
-
-```powershell
-python -c "
-from deepresearch.config import get_settings
-from deepresearch.db import get_engine, get_session_factory
-from deepresearch.embeddings import LocalEmbeddingProvider
-from deepresearch.hybrid import retrieve_hybrid
-from deepresearch.reranker import LocalCrossEncoderReranker, rerank_results
-s = get_settings(); engine = get_engine(s)
-provider = LocalEmbeddingProvider(model_name=s.embedding_model, device=s.embedding_device)
-reranker = LocalCrossEncoderReranker(model_name=s.reranker_model, device=s.reranker_device)
-with get_session_factory(engine)() as session:
-    hybrid = retrieve_hybrid(session, provider, 'hybrid retrieval', top_k=s.reranker_candidate_top_k)
-    for r in rerank_results('hybrid retrieval', hybrid, reranker, top_k=s.retrieval_top_k):
-        print(round(r.score, 4), r.chunk_index, r.text[:80])
-"
-```
-
-Top 20 hybrid candidates jointly scored with the query by local
-`BAAI/bge-reranker-base` (~278M params, CPU-first; one-time ~1.1 GB
-download to the HF cache). Raw scores, ties by chunk ID, failures
-propagate. Details: `docs/adr/ADR-008-reranking.md`.
-
-## Generation provider (M9)
-
-Ollama must be installed and running; install the model once:
-
-```powershell
-ollama pull qwen3:4b
-ollama list   # verify qwen3:4b is present
-```
-
-Do not pull larger variants (no 14B/30B/32B, no 12B/27B). GPU use
-depends on Ollama and the local environment — it is not guaranteed.
-
-```powershell
-python -c "
-from deepresearch.config import get_settings
-from deepresearch.llm import OllamaLLMProvider
-s = get_settings()
-provider = OllamaLLMProvider.from_settings(s)
-try:
-    print(provider.generate('Reply with exactly: OK'))
-finally:
-    provider.close()
-"
-```
-
-The provider (`qwen3:4b`, 120 s timeout, temperature 0.0) feeds the
-M10 grounded pipeline below. The live smoke test
-(`tests/test_llm_ollama_live.py`) runs against the same daemon and
-skips with setup instructions when Ollama is absent. Details:
-`docs/adr/ADR-009-ollama-generation-provider.md`.
-
-### Default local mode (M19)
-
-The project runs locally using Ollama/Qwen3 4B with no API keys and
-no network beyond localhost. This is the default: `LLM_PROVIDER` is
-`ollama` unless explicitly changed. All tests, evaluation, and the
-frontend work in this mode.
-
-### Optional cloud providers (M19)
-
-Alternative providers can be configured when credentials are
-available — they are never required:
-
-```powershell
-# OpenAI-compatible endpoint (any /chat/completions server)
-$env:LLM_PROVIDER="openai_compatible"
-$env:OPENAI_COMPATIBLE_API_KEY="<key>"
-# $env:OPENAI_COMPATIBLE_BASE_URL="https://api.openai.com/v1"  # default
-# $env:OPENAI_COMPATIBLE_MODEL="gpt-4o-mini"                   # default
-
-# Gemini (generateContent REST, no SDK needed)
-$env:LLM_PROVIDER="gemini"
-$env:GEMINI_API_KEY="<key>"
-# $env:GEMINI_MODEL="gemini-2.0-flash"                         # default
-```
-
-The research pipeline, agent, verifier, and evaluation take the same
-`LLMProvider` either way; only the factory (`create_llm_provider`)
-knows which adapter is active. Unknown provider names and missing
-keys fail fast with a clear configuration error. Details:
-`docs/adr/ADR-019-provider-abstraction.md`.
-
-## Grounded answers (M10)
+### Asking a grounded question (Python)
 
 ```powershell
 python -c "
@@ -342,138 +156,27 @@ from deepresearch.reranker import LocalCrossEncoderReranker
 s = get_settings(); engine = get_engine(s)
 with get_session_factory(engine)() as session:
     result = answer_question(
-        session,
-        LocalEmbeddingProvider(),
-        LocalCrossEncoderReranker(device='cpu'),
-        OllamaLLMProvider.from_settings(s),
-        'What does hybrid retrieval combine?',
+        session, LocalEmbeddingProvider(), LocalCrossEncoderReranker(device='cpu'),
+        OllamaLLMProvider.from_settings(s), 'What does hybrid retrieval combine?',
+        verify_citations=True,
     )
+    print(result.status)
     print(result.answer)
 "
 ```
 
-`answer_question` runs hybrid → rerank → delimited evidence prompt →
-LLM, returning a `GroundedAnswer` (answer text, evidence, citations,
-model identity). Evidence blocks carry `Citation [N]` markers; the
-answer's markers are extracted back to evidence in first-use order,
-with out-of-range markers retained as invalid references. Pass
-`verify_citations=True` to judge each cited claim against its cited
-evidence with the local LLM (JSON verdicts; `GroundedAnswer.
-verification_report`): supported / unsupported / insufficient_evidence,
-plus explicit invalid / uncited / unverifiable states. Empty evidence
-short-circuits without calling any LLM; retrieved text stays untrusted
-data inside evidence blocks. Requires ingested + embedded chunks and
-a running Ollama (also for live verification). Details:
-`docs/adr/ADR-010-grounded-generation.md`,
-`docs/adr/ADR-011-citations.md`,
-`docs/adr/ADR-012-citation-verification.md`. Verification is an
-LLM-assisted baseline that itself needs evaluation — not a
-correctness proof. M13 adds explicit outcomes: `status` is
-`no_evidence` (fixed message, zero LLM calls), `insufficient_evidence`
-(unsupported/unverifiable cited rows), `answered`, or
-`conflicting_evidence` (deterministic numeric contradictions; both
-sources preserved, conflict-aware prompting). Details:
-`docs/adr/ADR-013-no-answer-and-conflict-handling.md`. Conflict
-detection is conservative — no perfect-detection claim is made. No
-factual-accuracy or production-readiness claim is made.
-
-## Research agent (M14)
-
-```powershell
-python -c "
-from deepresearch.config import get_settings
-from deepresearch.db import get_engine, get_session_factory
-from deepresearch.agent import run_research_agent
-from deepresearch.embeddings import LocalEmbeddingProvider
-from deepresearch.llm import OllamaLLMProvider
-s = get_settings(); engine = get_engine(s)
-with get_session_factory(engine)() as session:
-    result = run_research_agent(
-        session, LocalEmbeddingProvider(), OllamaLLMProvider.from_settings(s),
-        'What does hybrid retrieval combine?',
-    )
-    print(result.termination_reason, len(result.evidence))
-"
-```
-
-`run_research_agent` loops LLM decisions over exactly three
-read-only tools (`search_documents`, `get_chunk`, `get_document`)
-with hard caps (8 iterations, 12 tool calls, 60 s) and returns
-deduplicated evidence for the existing answer pipeline. Local corpus
-only — no web search, no code execution, no writes. Details:
-`docs/adr/ADR-014-bounded-research-agent.md`. Not a general
-autonomous agent; live reliability is smoke-tested, not asserted.
-
-## Observability (M15)
-
-```powershell
-python -c "
-from deepresearch.observability import traced_request, get_current_trace
-with traced_request() as trace:
-    pass  # run any pipeline call here; stages/counters attach to trace
-print(trace.to_dict())
-"
-```
-
-Every request gets an `X-Request-ID` (preserved or minted) with an
-isolated in-memory `RequestTrace`: monotonic stage timings, candidate
-counts per pipeline stage, model identity per role (`llm`,
-`verifier`, `agent`), token/cost fields that stay `None` unless a
-provider reports them, and explicit termination. Logs and traces
-carry identifiers and counts only — never prompts, documents,
-reasoning, or secrets. No external platform, no dashboard, no
-persistence. Details: `docs/adr/ADR-015-observability.md`.
-
-## Evaluation (M16)
-
-```powershell
-python -c "
-from deepresearch.eval_runner import load_dataset, run_evaluation, save_result
-from deepresearch.evaluation import ExperimentConfig
-dataset = load_dataset('evals/datasets/eval-dev-v1.json')
-print(dataset.version, len(dataset.cases), 'cases')
-"
-```
-
-Versioned datasets (`evals/datasets/`, 8 explicit categories),
-source-level ground truth, Recall@3/5/10 + MRR (`None` means
-unavailable, never zero), deterministic answer/citation metrics
-from verification rows and statuses, abstention/conflict rates,
-P50/P95 from real trace timings, and sha256-fingerprinted
-experiments across vector/BM25/hybrid/reranked configs. Results
-serialize to `evals/results/` (git-ignored). The shipped
-`eval-dev-v1` is a development fixture, not a representative
-benchmark. Details: `docs/EVALUATION.md`,
-`docs/adr/ADR-016-evaluation-framework.md`.
-
-## Security (M17)
-
-Threat model and trust boundaries: `docs/SECURITY.md` (retrieved
-text is untrusted data; 3 read-only agent tools; content-free
-observability). Tested properties: 8-attack injection corpus stays
-data (`tests/fixtures/adversarial.txt`), tool allowlist + argument
-abuse rejected fail-closed, structured output bounded
-(parse→validate→repair→reject), citations strictly `[N]`-mapped,
-agent exhaustion terminates, poisoned corpora keep provenance with
-conflict status, fake secrets never reach logs/traces. Explicit
-guards only where inputs were unbounded: 4000-char questions, 10 MB
-documents, NUL-byte sanitization. No absolute-security claim —
-see limitations in `docs/SECURITY.md`. Details:
-`docs/adr/ADR-017-security-adversarial-testing.md`.
-
-## Tests
+## Running tests
 
 ```powershell
 pip install -e ".[dev]"
 pytest -v
-# Research API boundary (fakes only + PG integration):
+# Research API boundary (fakes + PG integration):
 # pytest tests/test_research_api.py tests/test_research_api_postgres.py -v
-# Live-DB check only (skipped if Postgres is unreachable):
+# Live-DB override (skipped if PostgreSQL is unreachable):
 # $env:TEST_DATABASE_URL="postgresql+psycopg://deepresearch:deepresearch@localhost:5432/deepresearch"
-# pytest -v
 ```
 
-Frontend tests (mocked fetch — no Ollama, no Postgres):
+Frontend tests use mocked fetch — no Ollama, no Postgres:
 
 ```powershell
 cd frontend
@@ -482,85 +185,57 @@ npm test        # vitest run
 npm run typecheck
 ```
 
-## Lint / format (ruff)
+What needs what is spelled out in `docs/TESTING.md`.
+
+## Evaluation
 
 ```powershell
-ruff check src tests
-ruff format --check src tests
-ruff format src tests   # apply fixes
+python -c "
+from deepresearch.eval_runner import load_dataset
+dataset = load_dataset('evals/datasets/eval-dev-v1.json')
+print(dataset.version, len(dataset.cases), 'cases')
+"
 ```
 
-## Endpoints
+`eval-dev-v1` (8 cases, 7 documents, one case per category: single/multi-document, exact-lookup, semantic, multi-hop, no-answer, conflict, injection) is a **development fixture, not a representative benchmark**. Metrics (Recall@3/5/10, MRR, correctness, faithfulness, citation correctness/completeness, abstention, conflict, P50/P95 latency) are intended for controlled comparisons between configs, never for general claims. Details: `docs/EVALUATION.md`.
 
-- `GET /health` → `{"status":"ok",...}` (liveness: process alive, no dependencies)
-- `GET /ready` → `200 {"status":"ready"}` or `503 {"status":"not_ready"}` (can accept research work: PostgreSQL reachable AND provider selection valid; the model daemon itself is never probed)
-- `POST /api/research` → `202` job snapshot (`{"question":"..."}`; 422 on empty/>4000 chars; 503 `shutting_down` envelope once shutdown starts)
-- `GET /api/research/{request_id}` → job snapshot (`running`/`completed`/`failed`; 404 unknown)
+## Security
 
-Every response carries `X-Request-ID` (preserved when the client
-sends a valid one, generated otherwise). On the job itself the ID
-lives in response bodies (`request_id`, `result.request_id`,
-`research_details.request_id`); poll-request headers echo only that
-poll's own HTTP request ID. Unexpected failures return a safe 500
-envelope (`message` + `type` + `request_id`, never a stack trace).
+Threat model and trust boundaries: `docs/SECURITY.md` (retrieved text is untrusted data; 3 read-only agent tools; content-free observability). Tested properties: injection corpus stays data, tool allowlist + argument abuse rejected fail-closed, structured output bounded (parse → validate → repair-once → reject), citations strictly `[N]`-mapped, agent exhaustion terminates, poisoned corpora keep provenance, fake secrets never reach logs/traces. Defenses are layered mitigations with documented limits — not immunity claims.
 
-Example research request (backend on `:8000`, Postgres + models running):
+## Architecture docs
 
-```powershell
-$job = Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/research `
-  -ContentType "application/json" -Body '{"question":"What does hybrid retrieval combine?"}'
-$job.job_status          # running
-Invoke-RestMethod -Uri "http://localhost:8000/api/research/$($job.request_id)"
-```
+- System design: `docs/ARCHITECTURE.md` (§19 has the Mermaid system map)
+- Runtime lifecycle: `docs/ARCHITECTURE.md` §18, `docs/adr/ADR-020-production-polish.md`
+- Provider abstraction: `docs/adr/ADR-019-provider-abstraction.md`
+- Research UI + API boundary: `docs/adr/ADR-018-frontend-research-experience.md`
+- Security rationale: `docs/adr/ADR-017-security-adversarial-testing.md`
+- Evaluation design: `docs/adr/ADR-016-evaluation-framework.md`
+- Retrieval/generation/citations: ADRs 003–014 in `docs/adr/`
+- Live demo script: `docs/DEMO.md`
 
-## Frontend (M18)
+## API contract
 
-```powershell
-# 1. Start the backend (from the repo root; needs Postgres + Ollama for real answers)
-uvicorn deepresearch.main:app --host 0.0.0.0 --port 8000
+All responses carry `X-Request-ID` (preserved when the client sends a valid one, generated otherwise); job IDs additionally live in response bodies.
 
-# 2. Start the frontend (separate shell)
-cd frontend
-npm install
-npm run dev    # http://localhost:3000
-```
+- `GET /health` — purpose: process liveness. No request body. Response `200 {"status":"ok","service":...,"env":...}`. Never requires DB or models.
+- `GET /ready` — purpose: can this instance accept research work. Response `200 {"status":"ready"}` when PostgreSQL is reachable and the provider selection is valid; `503 {"status":"not_ready"}` otherwise. Cheap by design; the model daemon is never probed.
+- `POST /api/research` — purpose: start a research job. Request `{"question":"..."}` (non-empty, ≤ 4000 chars). Response `202` job snapshot `{request_id, job_status:"running", stages, result:null, error:null}`. Status codes: `422` invalid question, `500` safe envelope `{error:{message,type,request_id}}`, `503` `shutting_down` envelope once shutdown starts.
+- `GET /api/research/{request_id}` — purpose: poll a job. Response `200` snapshot with `job_status` `running` | `completed` (plus `result`: answer, `status`, citations, evidence, conflicts, verification, research details) | `failed` (plus safe `error`). Status codes: `404 {"detail":"unknown research request"}` for unknown IDs.
 
-Environment variables:
+The response models expose identifiers, counts, durations, statuses, and source text only — never prompts, chain-of-thought, embeddings, secrets, or stack traces. In-memory jobs do not survive restarts; at most 100 terminal jobs are retained.
 
-| Variable | Where | Default | Purpose |
-|---|---|---|---|
-| `CORS_ORIGINS` | backend (`.env`) | `http://localhost:3000` | browser origins allowed to call the API |
-| `NEXT_PUBLIC_API_BASE_URL` | frontend | `http://localhost:8000` | backend base URL for submit/poll |
-| `DATABASE_URL` | backend | local Postgres | research pipeline storage |
+## Operations
 
-Architecture at a high level: the browser talks only to the two
-research endpoints above; the backend runs the unchanged M10 pipeline
-(hybrid → rerank → grounded generation → citations → verification) in
-a background thread per request and exposes progress as real
-`RequestTrace` stages. The frontend renders answer + status +
-clickable citations + quoted evidence + research details, and never
-sees prompts, chain-of-thought, secrets, or stack traces. Full
-boundary documentation: `docs/ARCHITECTURE.md` and
-`docs/adr/ADR-018-frontend-research-experience.md`.
+`/health` stays 200 while dependencies are down; `/ready` is 503 until PostgreSQL is reachable and the provider selection is valid. Startup validates configuration and refuses to serve on misconfiguration (clear message, no secrets). Shutdown marks running jobs `failed` (`type: "interrupted"`), closes provider HTTP clients, and disposes the engine.
 
-## Operations (M20)
-
-Health/readiness: `/health` stays 200 while dependencies are down;
-`/ready` is 503 until PostgreSQL is reachable and the provider
-selection is valid. Startup validates configuration and refuses to
-serve on misconfiguration (clear message, no secrets). Shutdown
-marks running jobs `failed` (`type: "interrupted"`), closes provider
-HTTP clients, and disposes the engine; in-memory jobs do not survive
-restarts, and at most `RESEARCH_MAX_RETAINED_JOBS` (default 100)
-terminal jobs are kept — running jobs are never evicted.
-
-Timeouts (all pre-existing; documented, not added):
+Timeouts (pre-existing; documented, not added):
 
 | Boundary | Value | Notes |
 |---|---|---|
 | Research submit/poll (HTTP) | none server-side | FastAPI returns immediately; frontend polls with a 5-minute client timeout |
 | Research execution | bounded by callees | agent cap 60 s; each LLM call bounded by its provider timeout |
-| Provider calls | 120 s default (`*_timeout_seconds`) | `LLMTimeoutError`, no retries |
+| Provider calls | 120 s default (`*_timeout_seconds`) | typed errors, no retries |
 | DB connects | 10 s (`DB_CONNECT_TIMEOUT_SECONDS`) | readiness fails fast instead of hanging |
 | Frontend poll | 5 min, 1 s interval | client-side only |
 
@@ -570,21 +245,69 @@ Timeouts (all pre-existing; documented, not added):
 - Startup fails with `invalid configuration: ...`: fix the named variable in `.env` (see `.env.example` sections for required vs optional). Never paste real keys into chat/logs.
 - Research jobs fail with `type: "interrupted"`: the server shut down mid-job; resubmit.
 - Slow first request: embedding/reranker models load lazily on first real pipeline run, not at startup.
-- Fresh database: schema is created idempotently by `init_db` on first backend use (`CREATE EXTENSION IF NOT EXISTS vector` + tables); the manual reference is `infra/migrations/001_initial.sql`. Nothing ever deletes data at startup.
+- Fresh database: schema is created idempotently by `init_db` on first backend use; the manual reference is `infra/migrations/001_initial.sql`. Nothing ever deletes data at startup.
 - Docker Desktop was restarted: containers exit; `docker start deepresearch-postgres-1` (or `docker compose up -d postgres`) and wait for `(healthy)`.
+
+### Default local mode
+
+The project runs locally using Ollama/Qwen3 4B with no API keys and no network beyond localhost (`LLM_PROVIDER=ollama`). All tests, evaluation, and the frontend work in this mode.
+
+### Optional cloud providers
+
+Alternative providers can be configured when credentials are available — they are never required:
+
+```powershell
+$env:LLM_PROVIDER="openai_compatible"
+$env:OPENAI_COMPATIBLE_API_KEY="<key>"
+# $env:OPENAI_COMPATIBLE_BASE_URL="https://api.openai.com/v1"  # default
+# $env:OPENAI_COMPATIBLE_MODEL="gpt-4o-mini"                   # default
+
+$env:LLM_PROVIDER="gemini"
+$env:GEMINI_API_KEY="<key>"
+# $env:GEMINI_MODEL="gemini-2.0-flash"                         # default
+```
+
+The pipeline, agent, verifier, and evaluation take the same `LLMProvider` either way; only the factory knows which adapter is active. Details: `docs/adr/ADR-019-provider-abstraction.md`.
+
+## Engineering Highlights
+
+- Hybrid retrieval combines vector search and BM25 with Reciprocal Rank Fusion.
+- BGE reranking refines retrieved candidates before generation.
+- Answers are constrained to retrieved evidence; empty evidence short-circuits without an LLM call.
+- Every cited claim is checked against its cited evidence; indeterminate verdicts stay explicit, never fabricated.
+- Conflicting sources are both preserved with an explicit conflict record; the answer must not silently pick a side.
+- Agent execution is bounded by iteration, tool-call, and timeout limits over three read-only tools.
+- Observability records request/stage metadata without storing private chain-of-thought.
+- Evaluation supports Recall@K, MRR, citation metrics, abstention, conflict, and latency measurements on versioned datasets.
+- Security tests cover prompt injection, tool abuse, malformed outputs, resource exhaustion, Unicode edge cases, and observability leakage.
+- Multiple LLM providers are supported behind a common interface with Ollama as the default.
+- Runtime controls cover config validation, health/readiness separation, bounded job retention, graceful shutdown, and safe error envelopes.
+
+## Limitations
+
+- In-memory research jobs: no persistence, no distributed workers, at most 100 terminal jobs retained.
+- Small development evaluation dataset (`eval-dev-v1`, 8 cases): controlled comparisons only, not a benchmark.
+- Local-model latency: first runs load embedding/reranker weights; each Ollama call takes tens of seconds on the reference hardware.
+- Verifier quality is not independently benchmarked; it is an LLM-assisted baseline.
+- Conflict detection covers numeric contradictions in shared context only — not negations, paraphrases, or unit mismatches.
+- Security tests are layered mitigations on synthetic fixtures; they do not prove immunity.
+- No authentication, no persistent user history, no web search in v1.
+- Cloud adapters are tested against mocked transports only, never live vendor APIs.
+
+## Project status
+
+DeepResearch is a local-first AI research system and portfolio project, complete through Milestones 1–21: foundation, persistence, ingestion, embeddings, retrieval (vector, BM25, hybrid, reranked), generation, citations, verification, answer statuses, research agent, observability, evaluation framework, adversarial security, research UI, provider abstraction, production polish, and final validation. Live-validated end to end (PostgreSQL + bge models + Ollama `qwen3:4b`); see `docs/DEMO.md`.
 
 ## Decisions locked before Milestone 1
 
-1. Root is `C:\Users\tripa\Projects\DeepResearch`; no nested repo dir.
-2. BM25 = in-Python behind a retrieval interface (impl in M6; ADR then).
-3. Chunk size in tokens; defaults 800 / overlap 120 (M3, experiments later).
-4. Structured output = app-side Pydantic parse→validate→retry/reject; no hard Ollama dependency.
-5. Web search disabled in v1; agent tools only `search_documents/get_chunk/get_document`.
+1. Repository root holds `src/`, `tests/`, `evals/`, `apps/`, `infra/`, `docs/` directly (no nested repo dir).
+2. BM25 = in-Python behind a retrieval interface.
+3. Chunk size in tokens; defaults 800 / overlap 120.
+4. Structured output = app-side Pydantic parse → validate → retry/reject; no hard Ollama dependency.
+5. Web search disabled in v1; agent tools only `search_documents`/`get_chunk`/`get_document`.
 6. Fixed `PRODUCT_REQUIREMENTS.md` numbering: `7A→8`, `8→9`, `9→10` (content unchanged).
 7. Hardware/models frozen: LOQ 16GB/6GB, `qwen3:4b Q4_K_M`, `bge-small-en-v1.5`, `bge-reranker-base`, optional `gemma3:4b`; no larger models or paid APIs without approval.
 
-## What's next (not in M20)
+## Milestone history (compact)
 
-Milestone 21+: authentication, conversation history, document upload
-UI, dashboards, production deployment — all explicitly out of scope
-for M20 (see milestone boundary in the M20 brief).
+M1 foundation (FastAPI, Compose, health, config, logging, pytest) · M2 schema + repository · M3 ingestion (PDF/MD/TXT/HTML, hashing, chunking) · M4 local embeddings · M5 vector retrieval · M6 BM25 · M7 RRF hybrid · M8 reranking · M9 Ollama provider · M10 grounded generation · M11 citations · M12 verification · M13 answer statuses + conflicts · M14 bounded agent · M15 observability · M16 evaluation framework · M17 adversarial security · M18 research UI + API · M19 provider abstraction + cloud adapters · M20 production polish (validation, lifecycle, retention, shutdown) · M21 final validation (live demo, docs).

@@ -847,6 +847,35 @@ shutdown: reject submits (503) -> mark running interrupted
    No Alembic, no Redis, no queues, no Kubernetes.
 
 
+## 19. System map (M21)
+
+The runtime architecture (GitHub renders the Mermaid block below).
+Dashed lines are trust boundaries: everything below "untrusted
+evidence" is data, never instructions.
+
+```mermaid
+flowchart TB
+    User(["User"]) --> Web["Next.js frontend<br/>question, progress, citations, evidence"]
+    Web --> API["FastAPI<br/>POST /api/research<br/>GET /api/research/{id}<br/>/health, /ready"]
+    API --> Service["ResearchService<br/>jobs: running, completed, failed"]
+    Service --> Agent["Bounded agent<br/>3 read-only tools"]
+    Service --> Retrieval["Hybrid retrieval<br/>vector + BM25, RRF fusion"]
+    Agent --> Retrieval
+    Retrieval --> PG[("PostgreSQL + pgvector<br/>documents, chunks, embeddings")]
+    Retrieval --> Reranker["Local cross-encoder reranker"]
+    Reranker --> Gen["Grounded generation<br/>Ollama qwen3:4b<br/>or optional provider"]
+    Gen -.->|untrusted evidence| Gen
+    Gen --> Verify["Citation verification<br/>supported / unsupported / ..."]
+    Verify --> Answer(["Answer + citations + evidence<br/>status: answered / insufficient /<br/>conflicting / no_evidence"])
+    Gen --> Obs["Observability<br/>stages, counters, models<br/>(no prompts, no CoT)"]
+    Verify --> Obs
+    Eval["Evaluation runner<br/>eval-dev-v1, Recall@K, MRR,<br/>citation + abstention metrics"] -.->|reads| PG
+    Eval -.->|runs pipeline| Gen
+    Cloud["Optional providers<br/>OpenAI-compatible, Gemini<br/>env keys only"] -.->|implements| Gen
+    Ollama[("Ollama daemon<br/>qwen3:4b, localhost")] --> Gen
+```
+
+
 ## Initial local model configuration
 
 The development machine is a Lenovo LOQ with:

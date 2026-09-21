@@ -72,7 +72,11 @@ def test_live_grounded_generation() -> None:
                 "What does hybrid retrieval combine?",
                 retrieval_top_k=3,
                 evidence_top_k=2,
-                max_tokens=128,
+                # No max_tokens cap here: qwen3:4b thinking consumes capped
+                # budgets and returns empty text (M21 live finding:
+                # eval_count == cap, done_reason == length). Cap plumbing
+                # is covered by unit tests; this test proves the grounded
+                # pipeline end to end.
             )
             elapsed_ms = int((time.perf_counter() - started) * 1000)
             assert result.has_evidence is True
