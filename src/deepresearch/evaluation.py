@@ -103,6 +103,7 @@ class ExperimentConfig(BaseModel):
     embedding_model: str = "BAAI/bge-small-en-v1.5"
     embedding_version: str = "1"
     reranker_model: str = "BAAI/bge-reranker-base"
+    llm_provider: str = "ollama"
     llm_model: str = "qwen3:4b"
     fusion_method: str = "rrf"
     rrf_k: int = 60

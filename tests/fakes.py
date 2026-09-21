@@ -8,7 +8,7 @@ import random
 from collections.abc import Sequence
 
 from deepresearch.embeddings import EMBEDDING_DIMENSION, EmbeddingError
-from deepresearch.llm import LLMError
+from deepresearch.llm import LLMError, LLMResponse
 from deepresearch.reranker import RerankerError
 
 
@@ -150,6 +150,26 @@ class FakeLLMProvider:
         if self._fail:
             raise LLMError("fake LLM forced failure")
         return self._answer
+
+    def generate_response(
+        self,
+        prompt: str,
+        *,
+        system_prompt: str | None = None,
+        temperature: float = 0.0,
+        max_tokens: int | None = None,
+    ) -> LLMResponse:
+        """Text-only fake: delegates to ``generate``; usage honestly unknown (None)."""
+        return LLMResponse(
+            text=self.generate(
+                prompt,
+                system_prompt=system_prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            ),
+            model=self.model_name,
+            provider=type(self).__name__,
+        )
 
 
 class FakeVerifierLLM(FakeLLMProvider):

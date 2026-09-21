@@ -45,7 +45,6 @@ from deepresearch.config import get_settings
 from deepresearch.db import get_engine, get_session_factory, init_db
 from deepresearch.embeddings import LocalEmbeddingProvider
 from deepresearch.generation import MAX_QUESTION_CHARS, GroundedAnswer, answer_question
-from deepresearch.llm import default_llm_provider
 from deepresearch.logging import get_logger
 from deepresearch.observability import (
     COUNTER_RETRIEVAL_HYBRID,
@@ -54,6 +53,7 @@ from deepresearch.observability import (
     normalize_request_id,
     traced_request,
 )
+from deepresearch.providers import create_llm_provider
 from deepresearch.reranker import LocalCrossEncoderReranker
 
 logger = get_logger(__name__)
@@ -399,7 +399,12 @@ _default_providers: dict[str, object] | None = None
 
 
 def _ensure_default_providers() -> dict[str, object]:
-    """Build the local embedding/reranker/LLM providers once per process."""
+    """Build the embedding/reranker/LLM providers once per process.
+
+    The LLM branch goes through the M19 factory: ``LLM_PROVIDER``
+    unset (or ``ollama``) keeps the local default; cloud adapters
+    require their credentials and are never constructed otherwise.
+    """
     global _default_providers
     if _default_providers is None:
         with _PROVIDER_LOCK:
@@ -418,7 +423,7 @@ def _ensure_default_providers() -> dict[str, object]:
                         device=settings.reranker_device,
                         batch_size=settings.reranker_batch_size,
                     ),
-                    "llm": default_llm_provider(settings),
+                    "llm": create_llm_provider(settings),
                 }
     return _default_providers
 

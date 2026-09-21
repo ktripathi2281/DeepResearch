@@ -296,12 +296,13 @@ def answer_question(
         )
     generation_started = time.perf_counter()
     with traced_stage("generation"):
-        answer_text = llm_provider.generate(
+        generated = llm_provider.generate_response(
             prompt.user,
             system_prompt=prompt.system,
             temperature=temperature,
             max_tokens=max_tokens,
         )
+    answer_text = generated.text
     generation_ms = int((time.perf_counter() - generation_started) * 1000)
     trace = get_current_trace()
     if trace is not None:
@@ -313,6 +314,8 @@ def answer_question(
             model=llm_provider.model_name,
             provider=type(llm_provider).__name__,
             duration_ms=generation_ms,
+            input_tokens=generated.input_tokens,
+            output_tokens=generated.output_tokens,
         )
     extraction = extract_citations(answer_text, evidence)
     count(COUNTER_EVIDENCE, len(evidence))

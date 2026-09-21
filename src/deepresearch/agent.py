@@ -484,11 +484,12 @@ def run_research_agent(
 
         decision_started = time.perf_counter()
         try:
-            raw = llm_provider.generate(
+            decided = llm_provider.generate_response(
                 build_agent_prompt(request.question, trace, set(evidence)),
                 system_prompt=AGENT_SYSTEM_PROMPT,
                 temperature=0.0,
             )
+            raw = decided.text
         except LLMError as exc:
             termination, failure = "tool_failure", f"decision LLM failed: {exc}"
             break
@@ -500,6 +501,8 @@ def run_research_agent(
                 provider=type(llm_provider).__name__,
                 duration_ms=decision_ms,
                 role="agent",
+                input_tokens=decided.input_tokens,
+                output_tokens=decided.output_tokens,
             )
 
         try:
@@ -517,9 +520,10 @@ def run_research_agent(
             )
             repair_started = time.perf_counter()
             try:
-                raw = llm_provider.generate(
+                repaired = llm_provider.generate_response(
                     repair_prompt, system_prompt=AGENT_SYSTEM_PROMPT, temperature=0.0
                 )
+                raw = repaired.text
                 decision = parse_decision(raw)
                 arguments = _validate_arguments(decision)
             except (AgentError, LLMError) as exc:
@@ -533,6 +537,8 @@ def run_research_agent(
                     provider=type(llm_provider).__name__,
                     duration_ms=repair_ms,
                     role="agent",
+                    input_tokens=repaired.input_tokens,
+                    output_tokens=repaired.output_tokens,
                 )
 
         if decision.action == ACTION_FINISH:

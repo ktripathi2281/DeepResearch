@@ -79,6 +79,24 @@ class Settings(BaseSettings):
     ollama_temperature: float = Field(default=0.0, ge=0)
     ollama_max_tokens: int | None = Field(default=None, gt=0)
 
+    # Milestone 19: provider selection (see ADR-019). The default stays
+    # the local path; cloud adapters are optional, disabled without
+    # credentials, and selected only through the factory. Secrets are
+    # environment-only (None by default) and never logged.
+    llm_provider: str = Field(default="ollama")
+    openai_compatible_base_url: str = Field(default="https://api.openai.com/v1")
+    openai_compatible_api_key: str | None = Field(default=None)
+    openai_compatible_model: str = Field(default="gpt-4o-mini")
+    openai_compatible_timeout_seconds: float = Field(default=120, gt=0)
+    openai_compatible_temperature: float = Field(default=0.0, ge=0)
+    openai_compatible_max_tokens: int | None = Field(default=None, gt=0)
+    gemini_base_url: str = Field(default="https://generativelanguage.googleapis.com")
+    gemini_api_key: str | None = Field(default=None)
+    gemini_model: str = Field(default="gemini-2.0-flash")
+    gemini_timeout_seconds: float = Field(default=120, gt=0)
+    gemini_temperature: float = Field(default=0.0, ge=0)
+    gemini_max_tokens: int | None = Field(default=None, gt=0)
+
     # Milestone 14: bounded research agent (see ADR-014). Caps guarantee
     # termination; the agent itself can never raise them.
     agent_max_iterations: int = Field(default=8, ge=1)

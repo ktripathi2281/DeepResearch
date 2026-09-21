@@ -139,6 +139,69 @@ Later:
 
 Do not implement cloud providers until the local path is stable.
 
+Implemented in M19 (see `docs/adr/ADR-019-provider-abstraction.md`) —
+the local path is stable, so the two optional adapters now exist
+behind the same abstraction, still local-first and zero-cost by
+default:
+
+```text
+Application / pipeline (generation, agent, verifier, eval runner)
+     |
+LLMProvider  (generate -> str; generate_response -> LLMResponse
+              with text/model/provider + optional real token counts)
+     |
+ +---+------------+------------+
+ |                |            |
+OllamaLLM        OpenAI-      Gemini
+Provider         Compatible   Provider
+(local           Provider     (generateContent
+ default)        (chat/       REST, no SDK)
+                 completions)
+```
+
+- **Contract.** `generate()` still returns plain text, so every
+  existing caller works unchanged. `generate_response()` returns
+  `LLMResponse` (text, model, provider, `input_tokens`,
+  `output_tokens`, `total_tokens`); counts are populated only from
+  numbers the provider actually returned (`prompt_eval_count` /
+  `eval_count`, `usage`, `usageMetadata`) — `None` means unavailable,
+  never fabricated. A protocol-level default delegates to
+  `generate()` for text-only providers.
+- **Default local provider.** `OllamaLLMProvider` is unchanged:
+  `qwen3:4b`, `http://localhost:11434`, bounded timeouts, the M9
+  error taxonomy. Selected when `LLM_PROVIDER` is unset or `ollama`.
+- **Optional cloud providers.** Small `httpx` adapters, no new
+  dependencies (no vendor SDKs). Lazy clients: import and
+  construction perform no I/O; a missing key fails with
+  `LLMConfigurationError` only when selected or called. Keys live in
+  environment config only and never reach logs or error messages
+  (Gemini uses the `x-goog-api-key` header precisely so the key can
+  never appear in a logged request URL).
+- **Factory.** `create_llm_provider(settings)` in
+  `src/deepresearch/providers.py` is the single selection point
+  (`ollama` / `openai_compatible` / `gemini`); unknown names fail
+  clearly listing valid values. No provider branching exists anywhere
+  else — generation, agent, verifier, and eval runner take an
+  `LLMProvider` and never learn which one it is.
+- **Errors.** Adapter failures translate at the boundary to the M9
+  taxonomy (`LLMConnectionError`, `LLMTimeoutError`,
+  `LLMResponseError`, `LLMModelNotFoundError`) plus
+  `LLMConfigurationError` for selection/credential problems.
+- **Observability.** `record_llm_call` now also stores reported
+  input/output tokens (totals auto-sum); role separation is unchanged
+  (`llm` / `verifier` / `agent` each own their model keys).
+- **Evaluation.** `ExperimentConfig` records `llm_provider`
+  (default `ollama`) alongside `llm_model`, so different providers
+  always produce different experiment identities. No metric changed;
+  cloud providers never run in the normal eval suite.
+- **Layering rule (refined).** The M9 guard
+  (`test_no_direct_ollama_dependency_elsewhere`) now forbids
+  local-provider *API details* (concrete class, port, API path, CLI
+  hints, direct settings-attribute access) outside
+  `llm.py`/`config.py`; the bare provider-name token (`"ollama"` as
+  a selection value or identity default) is a legitimate
+  cross-cutting concern since M19.
+
 ### EmbeddingProvider
 
 ```python

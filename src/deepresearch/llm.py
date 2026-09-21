@@ -1,15 +1,21 @@
-"""Local LLM generation provider — Milestone 9.
+"""Local LLM generation provider — Milestone 9 (contract strengthened in M19).
 
 Establishes the generation capability only: an ``LLMProvider`` Protocol
 plus ``OllamaLLMProvider`` over the local Ollama HTTP API
 (``qwen3:4b`` default). No retrieval wiring, no structured output, no
 citations, no agents — those belong to M10+. Answer text only; no
 chain-of-thought is requested, stored, or returned.
+
+M19 adds an optional structured response (``LLMResponse`` with real
+token counts when the provider reports them, ``None`` otherwise —
+never fabricated) via ``generate_response``. Plain ``generate``
+still returns text, so existing callers work unchanged.
 """
 
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 import httpx
@@ -47,6 +53,28 @@ class LLMModelNotFoundError(LLMResponseError):
     """The configured model is not installed in Ollama."""
 
 
+class LLMConfigurationError(LLMError):
+    """The selected provider is misconfigured (unknown name, missing credential)."""
+
+
+@dataclass(frozen=True)
+class LLMResponse:
+    """Structured generation result: text plus optional reported usage.
+
+    Token counts are populated only from numbers the provider actually
+    returned (Ollama ``prompt_eval_count``/``eval_count``, OpenAI
+    ``usage``, Gemini ``usageMetadata``). ``None`` means unavailable —
+    never zero, never estimated.
+    """
+
+    text: str
+    model: str
+    provider: str
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+
+
 @runtime_checkable
 class LLMProvider(Protocol):
     """Minimal generation boundary; future cloud providers implement this."""
@@ -66,6 +94,30 @@ class LLMProvider(Protocol):
     ) -> str:
         """Generate answer text for one prompt. Raises ``LLMError`` on failure."""
         ...
+
+    def generate_response(
+        self,
+        prompt: str,
+        *,
+        system_prompt: str | None = None,
+        temperature: float = 0.0,
+        max_tokens: int | None = None,
+    ) -> LLMResponse:
+        """Generate text plus reported usage. Default: text only, tokens unknown.
+
+        Adapters override this to attach real token counts; the default
+        delegates to ``generate`` so text-only providers keep working.
+        """
+        return LLMResponse(
+            text=self.generate(
+                prompt,
+                system_prompt=system_prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            ),
+            model=self.model_name,
+            provider=type(self).__name__,
+        )
 
 
 class OllamaLLMProvider:
@@ -160,6 +212,35 @@ class OllamaLLMProvider:
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> str:
+        answer, _ = self._generate_full(prompt, system_prompt, temperature, max_tokens)
+        return answer
+
+    def generate_response(
+        self,
+        prompt: str,
+        *,
+        system_prompt: str | None = None,
+        temperature: float = 0.0,
+        max_tokens: int | None = None,
+    ) -> LLMResponse:
+        answer, body = self._generate_full(prompt, system_prompt, temperature, max_tokens)
+        return LLMResponse(
+            text=answer,
+            model=self.model_name,
+            provider=type(self).__name__,
+            input_tokens=optional_count(body.get("prompt_eval_count")),
+            output_tokens=optional_count(body.get("eval_count")),
+            total_tokens=optional_total(body.get("prompt_eval_count"), body.get("eval_count")),
+        )
+
+    def _generate_full(
+        self,
+        prompt: str,
+        system_prompt: str | None,
+        temperature: float | None,
+        max_tokens: int | None,
+    ) -> tuple[str, dict]:
+        """One request → (answer text, raw body). Raises ``LLMError`` on failure."""
         if not prompt or not prompt.strip():
             raise LLMError("prompt must be non-empty text")
         temp = self._temperature if temperature is None else temperature
@@ -227,7 +308,24 @@ class OllamaLLMProvider:
                 "duration_ms": elapsed_ms,
             },
         )
-        return answer
+        return answer, body
+
+
+def optional_count(value: object) -> int | None:
+    """A reported token count, or ``None`` when absent/invalid (never fabricated)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value >= 0:
+        return value
+    return None
+
+
+def optional_total(prompt_count: object, eval_count: object) -> int | None:
+    prompt_tokens = optional_count(prompt_count)
+    eval_tokens = optional_count(eval_count)
+    if prompt_tokens is None and eval_tokens is None:
+        return None
+    return (prompt_tokens or 0) + (eval_tokens or 0)
 
 
 def default_llm_provider(settings: Settings) -> LLMProvider:

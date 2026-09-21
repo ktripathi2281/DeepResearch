@@ -208,14 +208,34 @@ def test_temperature_validation() -> None:
         provider.close()
 
 
+# Since M19 the provider *name token* ("ollama" as an LLM_PROVIDER
+# value, identity default, or doc word) is a legitimate cross-cutting
+# concern. What must not leak outside llm.py/config.py is provider
+# HTTP/API knowledge: the concrete class, endpoint port/path, CLI
+# hints, and direct settings-attribute access (config.py stays the
+# indirection). See ADR-019.
+OLLAMA_API_DETAILS = (
+    "ollamallmprovider",
+    "11434",
+    "/api/generate",
+    "ollama pull",
+    "ollama_base_url",
+    "ollama_model",
+    "ollama_timeout",
+    "ollama_temperature",
+    "ollama_max_tokens",
+)
+
+
 def test_no_direct_ollama_dependency_elsewhere() -> None:
     # Settings in config.py are the sanctioned indirection; anything
-    # else touching Ollama HTTP/API details would be a layering leak.
+    # else touching local-provider HTTP/API details is a layering leak.
     offenders = []
     for path in SRC.glob("*.py"):
         if path.name in {"llm.py", "config.py", "__init__.py"}:
             continue
         content = path.read_text(encoding="utf-8").lower()
-        if "ollama" in content or "11434" in content or "/api/generate" in content:
-            offenders.append(path.name)
+        hits = [marker for marker in OLLAMA_API_DETAILS if marker in content]
+        if hits:
+            offenders.append(f"{path.name}: {hits}")
     assert offenders == []

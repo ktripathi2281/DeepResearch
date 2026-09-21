@@ -1,4 +1,4 @@
-# DeepResearch — Milestones 1–18: + Frontend & Research Experience
+﻿# DeepResearch — Milestones 1–19: + Provider Abstraction & Optional Cloud Providers
 
 Local-first, evidence-based research assistant. M1 built the development
 foundation (Python project, FastAPI skeleton, PostgreSQL + pgvector via
@@ -289,6 +289,37 @@ M10 grounded pipeline below. The live smoke test
 skips with setup instructions when Ollama is absent. Details:
 `docs/adr/ADR-009-ollama-generation-provider.md`.
 
+### Default local mode (M19)
+
+The project runs locally using Ollama/Qwen3 4B with no API keys and
+no network beyond localhost. This is the default: `LLM_PROVIDER` is
+`ollama` unless explicitly changed. All tests, evaluation, and the
+frontend work in this mode.
+
+### Optional cloud providers (M19)
+
+Alternative providers can be configured when credentials are
+available — they are never required:
+
+```powershell
+# OpenAI-compatible endpoint (any /chat/completions server)
+$env:LLM_PROVIDER="openai_compatible"
+$env:OPENAI_COMPATIBLE_API_KEY="<key>"
+# $env:OPENAI_COMPATIBLE_BASE_URL="https://api.openai.com/v1"  # default
+# $env:OPENAI_COMPATIBLE_MODEL="gpt-4o-mini"                   # default
+
+# Gemini (generateContent REST, no SDK needed)
+$env:LLM_PROVIDER="gemini"
+$env:GEMINI_API_KEY="<key>"
+# $env:GEMINI_MODEL="gemini-2.0-flash"                         # default
+```
+
+The research pipeline, agent, verifier, and evaluation take the same
+`LLMProvider` either way; only the factory (`create_llm_provider`)
+knows which adapter is active. Unknown provider names and missing
+keys fail fast with a clear configuration error. Details:
+`docs/adr/ADR-019-provider-abstraction.md`.
+
 ## Grounded answers (M10)
 
 ```powershell
@@ -506,8 +537,8 @@ boundary documentation: `docs/ARCHITECTURE.md` and
 6. Fixed `PRODUCT_REQUIREMENTS.md` numbering: `7A→8`, `8→9`, `9→10` (content unchanged).
 7. Hardware/models frozen: LOQ 16GB/6GB, `qwen3:4b Q4_K_M`, `bge-small-en-v1.5`, `bge-reranker-base`, optional `gemma3:4b`; no larger models or paid APIs without approval.
 
-## What's next (not in M18)
+## What's next (not in M19)
 
-Milestone 19+: authentication, conversation history, document upload
+Milestone 20+: authentication, conversation history, document upload
 UI, dashboards, production deployment — all explicitly out of scope
-for M18 (see milestone boundary in the M18 brief).
+for M19 (see milestone boundary in the M19 brief).

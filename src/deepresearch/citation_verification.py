@@ -218,12 +218,13 @@ def _verify_claim(
                 f"Previous output:\n{previous_output[:500]}"
             )
         call_started = time.perf_counter()
-        previous_output = llm_provider.generate(
+        generated = llm_provider.generate_response(
             user_prompt,
             system_prompt=system_prompt,
             temperature=temperature,
             max_tokens=max_tokens,
         )
+        previous_output = generated.text
         current = get_current_trace()
         if current is not None:
             current.record_llm_call(
@@ -231,6 +232,8 @@ def _verify_claim(
                 provider=type(llm_provider).__name__,
                 duration_ms=int((time.perf_counter() - call_started) * 1000),
                 role="verifier",
+                input_tokens=generated.input_tokens,
+                output_tokens=generated.output_tokens,
             )
         try:
             decision = parse_decision(previous_output)
